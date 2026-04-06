@@ -1,0 +1,421 @@
+"""
+Cortex Memory Engine — Living Mind
+Postgres-backed. No SQLite. Ever.
+
+Step 1: remember / recall / count / decay
+Everything else layers on top.
+"""
+
+import uuid
+import json
+import time
+import asyncio
+import asyncpg
+from dataclasses import dataclass, field
+from typing import Optional
+from datetime import datetime
+
+DATABASE_URL = "postgresql://frost@/living_mind?host=/var/run/postgresql"
+
+# Emotional encoding boosts (importance multipliers)
+EMOTION_BOOSTS = {
+    "fear":     1.50,
+    "surprise": 1.30,
+    "anger":    1.20,
+    "joy":      1.10,
+    "sadness":  1.00,
+    "disgust":  0.90,
+    "neutral":  1.00,
+}
+
+# Source monitoring confidence penalties
+SOURCE_CONFIDENCE = {
+    "experienced": 1.00,
+    "told":        0.85,
+    "generated":   0.75,
+    "inferred":    0.65,
+}
+
+# Ebbinghaus decay: R(t) = e^(-t/S) where S = S_base * (1+n)^1.5 * (1+I*2.0)
+EBBINGHAUS_BASE_STABILITY = 3600.0  # 1 hour half-life baseline
+
+
+@dataclass
+class Memory:
+    id: str
+    content: str
+    type: str
+    tags: list
+    importance: float
+    created_at: float
+    last_accessed: float
+    access_count: int
+    emotion: str
+    confidence: float
+    context: str
+    source: str
+    linked_ids: list
+    metadata: dict
+    is_flashbulb: bool = False
+    is_identity: bool = False
+
+
+class Cortex:
+    def __init__(self):
+        self._pool: Optional[asyncpg.Pool] = None
+
+    async def connect(self):
+        self._pool = await asyncpg.create_pool(DATABASE_URL, min_size=2, max_size=10)
+        await self._apply_schema()
+        print("[CORTEX] Connected to living_mind postgres")
+
+    async def disconnect(self):
+        if self._pool:
+            await self._pool.close()
+
+    async def _apply_schema(self):
+        schema_path = "cortex/schema.sql"
+        try:
+            with open(schema_path) as f:
+                sql = f.read()
+            async with self._pool.acquire() as conn:
+                await conn.execute(sql)
+        except Exception as e:
+            print(f"[CORTEX] Schema apply error: {e}")
+
+    # ------------------------------------------------------------------
+    # REMEMBER — store a new memory
+    # ------------------------------------------------------------------
+    async def remember(
+        self,
+        content: str,
+        type: str = "episodic",
+        tags: list = None,
+        importance: float = 0.5,
+        emotion: str = "neutral",
+        source: str = "experienced",
+        context: str = "",
+        linked_ids: list = None,
+        metadata: dict = None,
+    ) -> str:
+        tags = tags or []
+        linked_ids = linked_ids or []
+        metadata = metadata or {}
+
+        # Source monitoring confidence penalty
+        confidence = SOURCE_CONFIDENCE.get(source, 1.0)
+
+        # Emotional encoding boost
+        boost = EMOTION_BOOSTS.get(emotion, 1.0)
+        importance = min(1.0, importance * boost)
+
+        mem_id = str(uuid.uuid4())
+        now = time.time()
+
+        async with self._pool.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO memories (
+                    id, content, type, tags, importance, created_at,
+                    last_accessed, access_count, emotion, confidence,
+                    context, source, linked_ids, metadata
+                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+            """,
+                mem_id, content, type, tags, importance, now,
+                now, 0, emotion, confidence,
+                context, source, linked_ids,
+                json.dumps(metadata)
+            )
+
+
+        from cortex.priming import priming
+        if linked_ids:
+            from types import SimpleNamespace
+            m = SimpleNamespace(linked_ids=linked_ids)
+            import asyncio
+            asyncio.create_task(priming.cascade(m, self, depth=3))
+
+        return mem_id
+
+
+    # ------------------------------------------------------------------
+    # RECALL — full-text search with pg_trgm similarity
+    # ------------------------------------------------------------------
+    async def recall(
+        self,
+        query: str,
+        limit: int = 10,
+        min_importance: float = 0.0,
+        memory_type: str = None,
+        tag: str = None
+    ) -> list[Memory]:
+        where_clause = "WHERE (content % $1 OR $1 = '') AND importance >= $2"
+        args = [query, min_importance, limit]
+
+        if memory_type:
+            where_clause += " AND type = $" + str(len(args) + 1)
+            args.append(memory_type)
+
+        if tag:
+            where_clause += " AND $" + str(len(args) + 1) + " = ANY(tags)"
+            args.append(tag)
+
+        sql = f"""
+            SELECT id, content, type, tags, importance, created_at,
+                   last_accessed, access_count, emotion, confidence,
+                   context, source, linked_ids, metadata,
+                   is_flashbulb, is_identity,
+                   similarity(content, $1) AS sim
+            FROM memories
+            {where_clause}
+            ORDER BY sim DESC, importance DESC
+            LIMIT $3
+        """
+
+        now = time.time()
+        memories = []
+
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(sql, *args)
+            for row in rows:
+                memories.append(self._row_to_memory(row))
+
+            # Batch reconsolidation: single UPDATE for all recalled rows
+            if rows:
+                ids = [row["id"] for row in rows]
+                await conn.execute("""
+                    UPDATE memories
+                    SET last_accessed = $2,
+                        access_count  = access_count + 1,
+                        confidence    = GREATEST(0.1, confidence * 0.95)
+                    WHERE id = ANY($1::uuid[])
+                """, ids, now)
+
+
+        from cortex.working_memory import working_memory
+        from cortex.cognitive_biases import biases
+        from state.telemetry_broker import telemetry_broker
+        from core.awakening import awakening
+
+        directive = awakening.last_goal if awakening else ""
+        memories = biases.apply_biases(memories, telemetry_broker.state, directive)
+        
+        # 3.2. Spreading Activation (Priming - Cortex Paper Phase 4)
+        memories = await self._apply_priming(memories)
+
+        working_memory.add_many(memories)
+        return memories
+
+    async def _apply_priming(self, primary_memories: list[Memory]) -> list[Memory]:
+        """
+        Multi-hop spreading activation. If we hit A, link B and C get a boost.
+        """
+        if not primary_memories:
+            return []
+            
+        linked_ids = []
+        for m in primary_memories:
+            linked_ids.extend(m.linked_ids)
+            
+        if not linked_ids:
+            return primary_memories
+            
+        async with self._pool.acquire() as conn:
+            # Multi-hop Spreading Activation (1.15x boost for linked neighbors)
+            rows = await conn.fetch("""
+                SELECT id, content, type, tags, importance, created_at,
+                       last_accessed, access_count, emotion, confidence,
+                       context, source, linked_ids, metadata,
+                       is_flashbulb, is_identity
+                FROM memories
+                WHERE id = ANY($1)
+                  AND id != ALL($2)
+                LIMIT 5
+            """, list(set(linked_ids)), [m.id for m in primary_memories])
+            
+            primed = []
+            for r in rows:
+                m = self._row_to_memory(r)
+                m.importance *= 1.15  # Spreading activation cascade
+                primed.append(m)
+                
+        return primary_memories + primed
+
+
+    # ------------------------------------------------------------------
+    # EMOTIONAL RECALL — surface memories by emotion (fear first)
+    # ------------------------------------------------------------------
+    async def emotional_recall(
+        self,
+        query: str,
+        emotion: str = "fear",
+        limit: int = 10,
+    ) -> list[Memory]:
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT id, content, type, tags, importance, created_at,
+                       last_accessed, access_count, emotion, confidence,
+                       context, source, linked_ids, metadata,
+                       is_flashbulb, is_identity
+                FROM memories
+                WHERE content % $1
+                ORDER BY
+                    (emotion = $2)::int DESC,
+                    importance DESC
+                LIMIT $3
+            """, query, emotion, limit)
+        return [self._row_to_memory(r) for r in rows]
+
+    # ------------------------------------------------------------------
+    # DECAY — Ebbinghaus forgetting curves
+    # Protects flashbulb and identity memories
+    # ------------------------------------------------------------------
+    async def decay(self) -> int:
+        now = time.time()
+        pruned = 0
+
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT id, importance, access_count, last_accessed,
+                       is_flashbulb, is_identity
+                FROM memories
+                WHERE is_flashbulb = FALSE AND is_identity = FALSE
+            """)
+
+            for row in rows:
+                # S = S_base * (1+n)^1.5 * (1+I*2.0)
+                n = row["access_count"]
+                I = row["importance"]
+                S = EBBINGHAUS_BASE_STABILITY * ((1 + n) ** 1.5) * (1 + I * 2.0)
+                t = now - row["last_accessed"]
+                import math
+                retention = math.exp(-t / S)
+                new_importance = row["importance"] * retention
+
+                if new_importance < 0.05:
+                    await conn.execute("DELETE FROM memories WHERE id = $1", row["id"])
+                    pruned += 1
+                else:
+                    await conn.execute(
+                        "UPDATE memories SET importance = $1 WHERE id = $2",
+                        new_importance, row["id"]
+                    )
+
+        return pruned
+
+    # ------------------------------------------------------------------
+    # CONSOLIDATE — episodic → semantic (72h+ old, high access)
+    # ------------------------------------------------------------------
+    async def consolidate(self) -> int:
+        import re
+        threshold = time.time() - (72 * 3600)
+        consolidated = 0
+
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT id, content FROM memories
+                WHERE type = 'episodic'
+                  AND created_at < $1
+                  AND access_count >= 3
+            """, threshold)
+
+            for row in rows:
+                # Strip leading episodic timestamp prefix before promoting to semantic
+                clean = re.sub(r'\[BRAIN\] Pulse #\d+: ', '', row["content"])
+                await conn.execute(
+                    "UPDATE memories SET type = 'semantic', content = $2 WHERE id = $1",
+                    row["id"], clean
+                )
+                consolidated += 1
+
+        return consolidated
+
+    # ------------------------------------------------------------------
+    # COUNT / STATS
+    # ------------------------------------------------------------------
+    async def count(self) -> int:
+        async with self._pool.acquire() as conn:
+            return await conn.fetchval("SELECT COUNT(*) FROM memories")
+
+    async def stats(self) -> dict:
+        async with self._pool.acquire() as conn:
+            total = await conn.fetchval("SELECT COUNT(*) FROM memories")
+            by_type = await conn.fetch(
+                "SELECT type, COUNT(*) as n FROM memories GROUP BY type"
+            )
+            by_emotion = await conn.fetch(
+                "SELECT emotion, COUNT(*) as n FROM memories GROUP BY emotion ORDER BY n DESC"
+            )
+            avg_importance = await conn.fetchval(
+                "SELECT ROUND(AVG(importance)::numeric, 3) FROM memories"
+            )
+            flashbulbs = await conn.fetchval(
+                "SELECT COUNT(*) FROM memories WHERE is_flashbulb = TRUE"
+            )
+            identity_count = await conn.fetchval(
+                "SELECT COUNT(*) FROM memories WHERE is_identity = TRUE"
+            )
+
+        return {
+            "total": total,
+            "avg_importance": float(avg_importance or 0),
+            "flashbulbs": flashbulbs,
+            "identity_memories": identity_count,
+            "by_type": {r["type"]: r["n"] for r in by_type},
+            "by_emotion": {r["emotion"]: r["n"] for r in by_emotion},
+        }
+
+    # ------------------------------------------------------------------
+    # IDENTITY SUMMARY — autobiographical self-description
+    # ------------------------------------------------------------------
+    async def identity_summary(self) -> str:
+        stats = await self.stats()
+        async with self._pool.acquire() as conn:
+            top_tags = await conn.fetch("""
+                SELECT unnest(tags) as tag, COUNT(*) as n
+                FROM memories
+                GROUP BY tag
+                ORDER BY n DESC
+                LIMIT 5
+            """)
+            top_emotion = await conn.fetchval("""
+                SELECT emotion FROM memories
+                WHERE emotion != 'neutral'
+                GROUP BY emotion ORDER BY COUNT(*) DESC LIMIT 1
+            """)
+
+        focus = ", ".join(r["tag"] for r in top_tags) or "none yet"
+        emotion = top_emotion or "neutral"
+        procedural = stats["by_type"].get("procedural", 0)
+        semantic = stats["by_type"].get("semantic", 0)
+
+        return (
+            f"I am an runtime with {stats['total']} core memories. "
+            f"My focus areas: {focus}. "
+            f"Dominant emotional signature: {emotion}. "
+            f"I have {procedural} learned procedures. "
+            f"I hold {semantic} semantic facts."
+        )
+
+    def _row_to_memory(self, row) -> Memory:
+        return Memory(
+            id=str(row["id"]),
+            content=row["content"],
+            type=row["type"],
+            tags=list(row["tags"]),
+            importance=row["importance"],
+            created_at=row["created_at"],
+            last_accessed=row["last_accessed"],
+            access_count=row["access_count"],
+            emotion=row["emotion"],
+            confidence=row["confidence"],
+            context=row["context"],
+            source=row["source"],
+            linked_ids=[str(i) for i in (row["linked_ids"] or [])],
+            metadata=json.loads(row["metadata"]) if isinstance(row["metadata"], str) else (row["metadata"] or {}),
+            is_flashbulb=row["is_flashbulb"],
+            is_identity=row["is_identity"],
+        )
+
+
+# Module-level singleton
+cortex = Cortex()
