@@ -135,7 +135,12 @@ Your agent can now:
 ## 👁️ Dashboard Preview
 
 ### Visual Cortex (Nodeus Ledger)
-![Nodeus Ledger Dashboard](screenshots/dashboard.png)
+<p align="center">
+  <img src="screenshots/dashboard.png" width="49%">
+  <img src="screenshots/dashboard_upload.png" width="49%">
+  <img src="screenshots/dashboard_network.png" width="49%">
+  <img src="screenshots/dashboard_config.png" width="49%">
+</p>
 
 ### The Tree of Life (3D Topology Viewer)
 ![3D Motherboard Topology](screenshots/motherboard.png)
