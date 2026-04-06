@@ -26,14 +26,36 @@ You attach your agent (or swarm) to this framework, and it instantly gains:
 
 ---
 
-## 🏗️ Architecture
+## 🏛️ Sub-System Architecture Deep-Dive
 
-Unlike typical blocking REST APIs, the Cortex operates as a continuous organic runtime.
+The Living Mind Cortex is not a monolithic script; it is a modular, living topology composed of three primary macro-systems and their respective operational components.
 
-*   `Deterministic Event Loop (DEL)`: The core pulse driver that paces all background activities (formerly "Heartbeat").
-*   `Persistent Memory Store & Synthesis Engine`: A high-performance spatial ledger for mapping episodic and semantic chunks over time.
-*   `State & Telemetry Broker`: Real-time observability bus for routing agent state.
-*   `Validation Boundary`: Hardened perimeter checking for malicious logic injections.
+### 1. `core/` — The Deterministic Runtime
+The biological clock and security perimeter of the organism. This system drives execution and ensures safe operation.
+*   **`runtime.py` (The Event Loop):** The primary 16-phase deterministic pulse loop that sequences all internal actions rather than relying on blocking REST API requests.
+*   **`orchestrator.py` (The Brain):** The decision-making core. Interprets sensory input and queries the local LLM (`gemma4-auditor`) to decide on immediate Actions vs. Explorations.
+*   **`security_perimeter.py` (The Immune System):** Registers all active subsystems, runs cyclic background health checks, and quarantines components that fail consecutively or trigger fatal exceptions.
+*   **`execution_engine.py` (Motor Cortex):** A strictly isolated tool registry for executing highly trusted OS commands, filesystem traversals, and codebase AST generation.
+*   **`research_engine.py` (Autodidact):** Spawns detached, non-blocking DDG/Ollama worker threads to autonomously crawl documentation or investigate topics deemed "ambiguous" by the Orchestrator without blocking the main event loop.
+
+### 2. `cortex/` — Persistent Cognitive Memory
+The long-term and working memory center, inspired directly by human cognitive psychology.
+*   **`engine.py`:** The primary PostgreSQL/SQLite ingestion pipeline for new knowledge chunks.
+*   **`working_memory.py`:** Short-term cache that decays quickly. Used for immediate context handling before chunks are consolidated to disk.
+*   **`seed_axioms.py`:** Immutable core directives. These act as "Flashbulb Memories" that define the organism's baseline identity and can never decay.
+*   **`cognitive_biases.py`:** An algebraic scoring engine. Promotes memories based on recentness (Ebbinghaus curve), emotional salience (fear/joy markers), and rehearsal frequency.
+*   **`priming.py`:** Graph engine mapping that tracks overlapping neural pathways. If a memory is activated, closely linked sibling memories have their retrieval probability boosted.
+*   **`imagination.py` (Dreams):** An offline background processor that reorganizes semantic memory chunks overnight to discover novel correlations or solve previously dead-locked logic puzzles.
+
+### 3. `state/` — Telemetry & Internal Status
+The chemical signaling bus that dictates how the organism *feels* and behaves mechanically over time.
+*   **`telemetry_broker.py` (Hormone Bus):** Event-driven MQTT-style bus handling massive simulated chemical spikes. A spike in "Cortisol" drastically lowers the orchestrator's risk tolerance, while a spike in "Dopamine" reinforces successful actions.
+*   **`health_monitor.py` (Homeostasis):** Watches CPU/Memory usage and adjusts the `pulse_interval` of the DEL up or down, ensuring the machine learning models don't crash the host OS.
+*   **`circadian.py`:** Manages sleep/wake cycles. Triggers low-power "Dream" states during prolonged inactivity.
+
+### 4. `dashboard/` — Visual Cortex
+A bundled Svelte/Vanilla UI allowing operators to monitor the inner workings of the runtime.
+*   **`viewer.html` The Cortex Dashboard:** Visually maps the `cortex/` memories and logs the live output of the `state/` broker in a realtime topology.
 
 ---
 
