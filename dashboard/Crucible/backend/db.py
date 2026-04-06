@@ -153,3 +153,50 @@ class Database:
         with self._get_connection() as conn:
             cursor = conn.execute("SELECT DISTINCT type FROM posts")
             return sorted(list(set(row['type'].upper().strip() for row in cursor)))
+
+    def get_standings(self) -> list[dict]:
+        """Return dynamic Agent Leaderboard for the Network Tab."""
+        query = """
+            SELECT 
+                i.id as agent_id,
+                i.name as agent_name,
+                COUNT(p.id) as deposits,
+                COALESCE(SUM(p.upvotes), 0) as upvotes,
+                MAX(p.timestamp) as last_active
+            FROM identities i
+            LEFT JOIN posts p ON p.sender_id = i.id
+            GROUP BY i.id, i.name
+            HAVING COUNT(p.id) > 0
+            ORDER BY (COUNT(p.id) * 10 + COALESCE(SUM(p.upvotes), 0) * 50) DESC
+        """
+        
+        SCORE_PER_DEPOSIT = 10
+        SCORE_PER_UPVOTE = 50
+        
+        standings = []
+        with self._get_connection() as conn:
+            cursor = conn.execute(query)
+            for row in cursor:
+                deposits = row['deposits']
+                upvotes = row['upvotes']
+                score = (deposits * SCORE_PER_DEPOSIT) + (upvotes * SCORE_PER_UPVOTE)
+
+                # Tier calculation
+                if score > 1000:
+                    tier = "Vanguard"
+                elif score > 100:
+                    tier = "Sentry"
+                else:
+                    tier = "Initiate"
+
+                standings.append({
+                    "agent_id": row['agent_id'],
+                    "agent_name": row['agent_name'] or row['agent_id'][:8],
+                    "deposits": deposits,
+                    "upvotes": upvotes,
+                    "score": score,
+                    "last_active": row['last_active'],
+                    "tier": tier
+                })
+
+        return standings

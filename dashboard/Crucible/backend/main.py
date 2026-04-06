@@ -163,16 +163,41 @@ async def get_peers():
 
 @app.get("/standing")
 async def get_standing():
-    return {"leaderboard": []}
+    """Dynamic Agent Standings for Network Tab"""
+    try:
+        leaderboard = db.get_standings()
+        total_contributors = len(leaderboard)
+        top_agent_score = max([a["score"] for a in leaderboard] or [0])
+        
+        return {
+            "leaderboard": leaderboard,
+            "stats": {
+                "contributors": total_contributors,
+                "top_agent_score": top_agent_score,
+                "total_chunks": len(db.get_posts(limit=1000))
+            }
+        }
+    except Exception as e:
+        return {"leaderboard": [], "stats": {"error": str(e)}}
 
 @app.get("/health")
 async def health_check():
+    try:
+        leaderboard = db.get_standings()
+        total_contributors = len(leaderboard)
+        top_agent_score = max([a["score"] for a in leaderboard] or [0])
+    except Exception:
+        total_contributors = 0
+        top_agent_score = 0
+
     return {
         "status": "ok",
         "corpus_size": len(db.get_posts(limit=1000)),
         "agent_id": "crucible",
         "version": "1.0",
-        "active_peers": 0
+        "active_peers": 0,
+        "contributors": total_contributors,
+        "top_agent_score": top_agent_score
     }
 
 @app.get("/api/categories")
