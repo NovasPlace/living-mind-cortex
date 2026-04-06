@@ -107,14 +107,16 @@ class AgentRuntime:
             except (asyncio.CancelledError, Exception):
                 pass 
 
-        await cortex.remember(
-            content    = f"AgentRuntime shutting down after {self.event_loops} event_loops.",
-            type       = "episodic",
-            tags       = ["shutdown", "identity", "system"],
-            importance = 0.9,
-            emotion    = "neutral",
-            source     = "experienced",
-        )
+        # Only write a permanent memory if the organism lived a full pulse cycle (prevents 0-heartbeat trauma)
+        if self.event_loops > 0:
+            await cortex.remember(
+                content    = f"AgentRuntime shutting down after {self.event_loops} event_loops.",
+                type       = "episodic",
+                tags       = ["shutdown", "identity", "system"],
+                importance = 0.9,
+                emotion    = "neutral",
+                source     = "experienced",
+            )
         await brain.close()
         await dreams.close()
         await awakening.close()
