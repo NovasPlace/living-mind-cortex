@@ -133,18 +133,28 @@ class Cortex:
             )
 
 
-        # ── Thermorphic injection ───────────────────────────────────────
-        # Seed new memory into the thermal substrate at salience ∝ importance
-        # Hot emotions get a thermal bonus matching the emotion boost table
-        thermal_temp = 0.3 + importance * 1.4   # maps [0,1] → [0.3, 1.7]
+        # -- Thermorphic injection -------------------------------------------
+        # Seed new memory into the substrate at salience proportional to importance.
+        # Explicit state_engine coupling (declared, not implicit):
+        #   temperature = base_temp + 0.7 * stress_load   (stress destabilizes)
+        #   retention   = base_ret  + 0.5 * reward_drive  (reward crystallizes)
+        try:
+            from cortex.state_engine import state_engine as _se
+            thermo = _se.to_thermo()
+            state_temp_bias = thermo["temperature"] - 0.20  # deviation from neutral
+        except Exception:
+            state_temp_bias = 0.0
+
+        thermal_temp = 0.3 + importance * 1.4 + state_temp_bias
         if emotion in ("fear", "surprise"):
             thermal_temp = min(2.2, thermal_temp * 1.3)  # flashbulb heat spike
         _thermal_substrate.inject(
-            content     = content[:120],
-            temperature = thermal_temp,
+            content           = content[:120],
+            temperature       = max(0.1, thermal_temp),
             anchor_temperature = thermal_temp if type == "identity" else 0.0,
-            tags        = tags + [type, emotion],
+            tags              = tags + [type, emotion],
         )
+
 
         from cortex.priming import priming
         if linked_ids:
@@ -514,15 +524,14 @@ class Cortex:
             except Exception as e:
                 print(f"[CORTEX] Crystal promotion error: {e}")
 
-        # ── Boiling nodes → hormone signal ──────────────────────────────
-        # A boiling concept is so hot it demands attention.
-        # Inject norepinephrine (alertness) proportional to boil count.
+        # -- Boiling nodes -> state signal -----------------------------------
+        # A boiling concept demands attention: spike novelty_exploration.
         if events.get("boiling"):
             try:
-                from state.telemetry_broker import telemetry_broker
-                telemetry_broker.inject(
-                    "norepinephrine",
-                    +0.03 * len(events["boiling"]),
+                from cortex.state_engine import state_engine
+                state_engine.inject_event(
+                    "novelty",
+                    magnitude=0.03 * len(events["boiling"]),
                     source="thermorphic_boil"
                 )
             except Exception:

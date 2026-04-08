@@ -13,8 +13,14 @@ from state.telemetry_broker import telemetry_broker
 from core.security_perimeter import immune
 from cortex.engine import cortex
 from cortex.thermorphic import substrate as _thermal_substrate
+from cortex.thermorphic import encode_atom
 from api.agent_gateway import router as agent_router
 from sovereign.heartbeat import SovereignHeartbeat
+from cortex.router import BiomechanicRouter
+from core.inference import SovereignInferenceClient
+
+router = BiomechanicRouter(cortex)
+inference_engine = SovereignInferenceClient()
 
 # ── Autonomic Heartbeat (shared singletons — same memory universe as recall()) ─
 heartbeat = SovereignHeartbeat(
@@ -211,6 +217,27 @@ class StimulateHormone(BaseModel):
 
 class ImagineScenario(BaseModel):
     scenario: str
+
+class InvocationRequest(BaseModel):
+    prompt: str
+
+@app.post("/api/invoke")
+async def invoke_sovereign(request: InvocationRequest):
+    # 1. Embed the incoming prompt into phase-space
+    # Use 256 dimensions which matches our testing and memory graph
+    import numpy as np
+    prompt_hvec = encode_atom(request.prompt, dim=256).astype(np.float32)
+    
+    # 2. Sweep the memory graph to determine the dominant hemisphere
+    adapter_id = await router.route_prompt(prompt_hvec)
+    
+    # 3. Fire the inference pass with the correct LoRA mounted
+    response_text = await inference_engine.generate(request.prompt, adapter_id)
+    
+    return {
+        "hemisphere_used": adapter_id,
+        "response": response_text
+    }
 
 @app.post("/api/agent/imagine")
 async def agent_imagine(msg: ImagineScenario):

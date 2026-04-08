@@ -47,32 +47,55 @@ NOVELTY_WINDOW  = 0.05    # fitness delta within which novelty roll activates
 NOVELTY_PROB    = 0.40    # probability of picking novel variant when tied
 
 
+
 @dataclass
-class HormoneGene:
-    """A mutable hormone with evolvable parameters."""
-    name:          str
-    baseline:      float
-    decay_rate:    float
-    effect_vector: Dict[str, float] = field(default_factory=dict)   # which phases it boosts
+class StateGene:
+    """
+    Evolvable parameter for one state_engine variable.
+    Replaces HormoneGene -- now maps to bounded state_engine parameters.
+    """
+    name:         str
+    subsystem:    str     # drives | loads | regulators
+    key:          str     # exact key in the StateVector dict
+    baseline:     float   # target value at rest
+    decay_rate:   float   # how fast it returns to baseline per step
 
 
 @dataclass
 class ThermorphicGene:
     """Evolvable thermorphic physics constants."""
-    alpha:            float = 0.08    # thermal diffusivity — how fast ideas spread
+    alpha:            float = 0.08    # thermal diffusivity
     fusion_threshold: float = 1.60   # combined temp to trigger concept fusion
     freeze_dwell:     int   = 8      # ticks below freeze before crystallization
 
 
 @dataclass
+class RetrievalGenome:
+    """Subsystem genome: controls memory retrieval physics."""
+    thermal: ThermorphicGene = field(default_factory=ThermorphicGene)
+
+
+@dataclass
+class DiffusionGenome:
+    """Subsystem genome: controls state_engine decay + drive dynamics."""
+    state_genes: Dict[str, StateGene] = field(default_factory=dict)
+
+
+@dataclass
+class MetacognitionGenome:
+    """Subsystem genome: controls pulse scheduling."""
+    phase_config: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
 class Genome:
-    """The organism's mutable blueprint."""
-    phase_config:      Dict[str, Any]         # phase_name → fire_every_N_pulses
-    hormone_genes:     Dict[str, HormoneGene] # hormone_name → gene
-    thermal_gene:      ThermorphicGene        # thermorphic physics constants
-    generation:        int = 0
-    fitness:           float = 0.0
-    notes:             str = ""
+    """The organism's mutable blueprint -- split into isolated subsystems."""
+    retrieval:      RetrievalGenome
+    diffusion:      DiffusionGenome
+    metacognition:  MetacognitionGenome
+    generation:     int   = 0
+    fitness:        float = 0.0
+    notes:          str   = ""
 
 
 class Evolver:
@@ -154,37 +177,44 @@ class Evolver:
     # ------------------------------------------------------------------
     def _build_initial_genome(self, telemetry_broker) -> Genome:
         """Snapshot the current runtime config as the initial genome."""
-        from state.telemetry_broker import BASELINES, DECAY_RATES
+        from cortex.state_engine import DECAY, REGULATOR_BASELINES
 
-        # Phase config from runtime (frequences in pulse counts)
+        # Build state genes from current state_engine constants
+        state_genes: Dict[str, StateGene] = {}
+        for key, rate in DECAY.items():
+            if rate is None:
+                rate = 0.05  # regulators
+            # Determine subsystem
+            from cortex.state_engine import StateVector
+            sv = StateVector()
+            if key in sv.drives:
+                subsystem = "drives"
+                baseline  = sv.drives[key]
+            elif key in sv.loads:
+                subsystem = "loads"
+                baseline  = sv.loads[key]
+            else:
+                subsystem = "regulators"
+                baseline  = REGULATOR_BASELINES.get(key, 0.5)
+            state_genes[key] = StateGene(
+                name=key, subsystem=subsystem, key=key,
+                baseline=baseline, decay_rate=rate,
+            )
+
         phase_config = dict(getattr(self._runtime, "phase_config", {
-            "decay":        10,
-            "dreams":       20,
-            "brain":         5,
-            "senses":        5,
-            "awakening":    50,
-            "self_aware":   30,
-            "metacognition": 6,
+            "decay": 10, "dreams": 20, "brain": 5, "senses": 5,
+            "awakening": 50, "self_aware": 30, "metacognition": 6,
         }))
 
-        # Build hormone genes from current BASELINES + DECAY_RATES
-        hormone_genes = {
-            name: HormoneGene(
-                name       = name,
-                baseline   = BASELINES.get(name, 0.5),
-                decay_rate = DECAY_RATES.get(name, 0.05),
-            )
-            for name in BASELINES
-        }
-
+        import cortex.thermorphic as _t
         return Genome(
-            phase_config  = phase_config,
-            hormone_genes = hormone_genes,
-            thermal_gene  = ThermorphicGene(
-                alpha            = getattr(__import__("cortex.thermorphic", fromlist=["ALPHA"]), "ALPHA", 0.08),
-                fusion_threshold = getattr(__import__("cortex.thermorphic", fromlist=["FUSION_THRESHOLD"]), "FUSION_THRESHOLD", 1.60),
-                freeze_dwell     = getattr(__import__("cortex.thermorphic", fromlist=["FREEZE_DWELL"]), "FREEZE_DWELL", 8),
-            ),
+            retrieval     = RetrievalGenome(thermal=ThermorphicGene(
+                alpha=getattr(_t, "ALPHA", 0.08),
+                fusion_threshold=getattr(_t, "FUSION_THRESHOLD", 1.60),
+                freeze_dwell=getattr(_t, "FREEZE_DWELL", 8),
+            )),
+            diffusion     = DiffusionGenome(state_genes=state_genes),
+            metacognition = MetacognitionGenome(phase_config=phase_config),
             generation    = 0,
             fitness       = 0.0,
             notes         = "Initial genome",
@@ -195,90 +225,85 @@ class Evolver:
     # ------------------------------------------------------------------
     def _generate_offspring(self, count: int) -> List[Genome]:
         offspring = []
+        # One mutation function per subsystem -- never mutate across subsystems simultaneously
         mutations = [
-            self._mutate_phase_frequencies,
-            self._mutate_hormone_baselines,
-            self._mutate_hormone_decay_rates,
-            self._insert_micro_phase,
-            self._mutate_thermal_gene,    # NEW: thermorphic physics mutation
+            ("metacognition", self._mutate_phase_frequencies),
+            ("diffusion",     self._mutate_state_baselines),
+            ("diffusion",     self._mutate_state_decay_rates),
+            ("metacognition", self._insert_micro_phase),
+            ("retrieval",     self._mutate_thermal_gene),
         ]
-
         for i in range(count):
             child = copy.deepcopy(self._current_genome)
-            # Apply 1-2 mutations per offspring
-            n_mutations = random.randint(1, 2)
-            chosen = random.sample(mutations, min(n_mutations, len(mutations)))
-            applied = []
-            for mutate_fn in chosen:
-                desc = mutate_fn(child)
-                if desc:
-                    applied.append(desc)
-            child.notes = f"gen{self._generation+1}_offspring{i}: {'; '.join(applied)}"
+            # Pick ONE subsystem per offspring (no cross-subsystem bleed)
+            subsystem, mutate_fn = random.choice(mutations)
+            desc = mutate_fn(child)
+            child.notes = f"gen{self._generation+1}_offspring{i}[{subsystem}]: {desc}"
             offspring.append(child)
-
         return offspring
 
     def _mutate_phase_frequencies(self, genome: Genome) -> str:
-        """Randomly adjust one phase's fire frequency ±2 pulses."""
-        mutable = [k for k in genome.phase_config if k not in ("brain",)]  # protect brain
+        """Mutate one MetacognitionGenome phase frequency."""
+        pc = genome.metacognition.phase_config
+        mutable = [k for k in pc if k != "brain"]
         if not mutable:
             return ""
         key = random.choice(mutable)
-        old_val = genome.phase_config[key]
+        old_val = pc[key]
         delta = random.choice([-2, -1, 1, 2])
-        new_val = max(3, min(100, old_val + delta))
-        genome.phase_config[key] = new_val
-        return f"{key}:{old_val}→{new_val}"
+        pc[key] = max(3, min(100, old_val + delta))
+        return f"{key}:{old_val}->{pc[key]}"
 
-    def _mutate_hormone_baselines(self, genome: Genome) -> str:
-        """Nudge one hormone's baseline ±0.03."""
-        name  = random.choice(list(genome.hormone_genes.keys()))
-        gene  = genome.hormone_genes[name]
+    def _mutate_state_baselines(self, genome: Genome) -> str:
+        """Nudge one StateGene baseline in DiffusionGenome."""
+        genes = genome.diffusion.state_genes
+        if not genes:
+            return ""
+        name = random.choice(list(genes.keys()))
+        gene = genes[name]
         delta = round(random.uniform(-0.03, 0.03), 3)
         gene.baseline = max(0.05, min(0.95, gene.baseline + delta))
         return f"{name}_base:{delta:+.3f}"
 
-    def _mutate_hormone_decay_rates(self, genome: Genome) -> str:
-        """Nudge one hormone's decay rate ±0.01."""
-        name  = random.choice(list(genome.hormone_genes.keys()))
-        gene  = genome.hormone_genes[name]
+    def _mutate_state_decay_rates(self, genome: Genome) -> str:
+        """Nudge one StateGene decay rate in DiffusionGenome."""
+        genes = genome.diffusion.state_genes
+        if not genes:
+            return ""
+        name = random.choice(list(genes.keys()))
+        gene = genes[name]
         delta = round(random.uniform(-0.01, 0.01), 3)
         gene.decay_rate = max(0.01, min(0.40, gene.decay_rate + delta))
         return f"{name}_decay:{delta:+.3f}"
 
     def _insert_micro_phase(self, genome: Genome) -> str:
-        """Occasionally insert a new micro-phase into the config."""
+        """Occasionally insert a new micro-phase into MetacognitionGenome."""
+        pc = genome.metacognition.phase_config
         candidates = {
             "interoception_feedback": 8,
             "context_refresh":        12,
             "counterfactual_replay":  15,
-            "thermorphic_pulse":      10,   # NEW: nightly thermal diffusion phase
+            "thermorphic_pulse":      10,
         }
         for phase_name, default_freq in candidates.items():
-            if phase_name not in genome.phase_config:
-                genome.phase_config[phase_name] = default_freq
+            if phase_name not in pc:
+                pc[phase_name] = default_freq
                 return f"micro_phase:{phase_name}"
         return ""
 
     def _mutate_thermal_gene(self, genome: Genome) -> str:
-        """
-        Mutate one of the three thermorphic physics constants.
-        Small nudges — the physics is sensitive to large changes.
-        """
+        """Mutate one thermorphic physics constant in RetrievalGenome."""
+        gene  = genome.retrieval.thermal
         field = random.choice(["alpha", "fusion_threshold", "freeze_dwell"])
-        gene  = genome.thermal_gene
-
         if field == "alpha":
             delta = round(random.uniform(-0.01, 0.01), 4)
             gene.alpha = max(0.01, min(0.30, gene.alpha + delta))
             return f"thermal.alpha:{delta:+.4f}"
-
         elif field == "fusion_threshold":
             delta = round(random.uniform(-0.1, 0.1), 3)
             gene.fusion_threshold = max(0.8, min(3.5, gene.fusion_threshold + delta))
             return f"thermal.fusion_threshold:{delta:+.3f}"
-
-        else:  # freeze_dwell
+        else:
             delta = random.choice([-1, 1])
             gene.freeze_dwell = max(3, min(30, gene.freeze_dwell + delta))
             return f"thermal.freeze_dwell:{delta:+d}"
@@ -288,35 +313,66 @@ class Evolver:
     # ------------------------------------------------------------------
     async def _shadow_test(self, variant: Genome, cortex, telemetry_broker) -> float:
         """
-        Estimate variant fitness without applying it to the live system.
-        Uses actual DB data: session ratings + outcomes + coherence check.
+        Shadow evaluation: control (no mutation) vs treatment (this variant).
+        Computes delta_fitness = treatment - control.
+        Writes result to causal_trace for evolution debugging.
         """
-        # Actual fitness from historical data (same oracle as full fitness)
-        base_fitness = await self._compute_fitness(cortex)
+        import uuid as _uuid
+        from cortex.state_engine import state_engine as _se
 
-        # Modifier based on how extreme the mutations are
-        # (large mutations are penalized slightly to prefer conservative changes)
-        phase_delta = sum(
-            abs(variant.phase_config.get(k, v) - v)
-            for k, v in self._current_genome.phase_config.items()
+        # Control: baseline fitness on current genome
+        control_fitness = await self._compute_fitness(cortex)
+        state_before = _se.snapshot()
+
+        # Extremity penalty: conservative mutations preferred
+        pc_orig = self._current_genome.metacognition.phase_config
+        pc_new  = variant.metacognition.phase_config
+        phase_delta = sum(abs(pc_new.get(k, v) - v) for k, v in pc_orig.items())
+
+        sg_orig = self._current_genome.diffusion.state_genes
+        sg_new  = variant.diffusion.state_genes
+        state_delta_sum = sum(
+            abs(sg_new[n].baseline   - sg_orig[n].baseline) +
+            abs(sg_new[n].decay_rate - sg_orig[n].decay_rate)
+            for n in sg_new if n in sg_orig
         )
-        hormone_delta = sum(
-            abs(variant.hormone_genes[n].baseline - self._current_genome.hormone_genes[n].baseline)
-            + abs(variant.hormone_genes[n].decay_rate - self._current_genome.hormone_genes[n].decay_rate)
-            for n in variant.hormone_genes
-            if n in self._current_genome.hormone_genes
-        )
+        extremity_penalty = min(0.10, (phase_delta + state_delta_sum) * 0.01)
 
-        extremity_penalty = min(0.1, (phase_delta + hormone_delta) * 0.01)
+        novelty_bonus = 0.02 if any(k not in pc_orig for k in pc_new) else 0.0
+        treatment_fitness = round(max(0.0, min(1.0,
+            control_fitness - extremity_penalty + novelty_bonus)), 3)
 
-        # Small novelty bonus for inserting a new micro-phase
-        novelty_bonus = 0.0
-        for k in variant.phase_config:
-            if k not in self._current_genome.phase_config:
-                novelty_bonus = 0.02
-                break
+        # -- Write causal_trace entry -----------------------------------------
+        state_after = _se.snapshot()
+        param_name  = variant.notes.split(":")[-1].strip() if ":" in variant.notes else variant.notes
+        subsystem   = variant.notes.split("[")[1].split("]")[0] if "[" in variant.notes else "unknown"
 
-        return round(max(0.0, min(1.0, base_fitness - extremity_penalty + novelty_bonus)), 3)
+        try:
+            async with cortex._pool.acquire() as conn:
+                await conn.execute("""
+                    INSERT INTO causal_trace
+                        (trace_id, mutation_id, subsystem, parameter_name,
+                         state_before, state_after, state_delta,
+                         fitness_before, fitness_after,
+                         eval_mode, pulse)
+                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'shadow',$10)
+                """,
+                    str(_uuid.uuid4()),
+                    str(_uuid.uuid4()),          # per-variant mutation_id
+                    subsystem,
+                    param_name,
+                    json.dumps(state_before),
+                    json.dumps(state_after),
+                    json.dumps({k: round(state_after.get(k, 0) - state_before.get(k, 0), 5)
+                                for k in state_before}),
+                    control_fitness,
+                    treatment_fitness,
+                    self._generation,
+                )
+        except Exception as e:
+            pass  # DB unavailable -- non-fatal
+
+        return treatment_fitness
 
     # ------------------------------------------------------------------
     # FITNESS ORACLE — agent-session-centric
@@ -457,7 +513,6 @@ class Evolver:
     async def _save_lineage(self, genome: Genome, cortex):
         """Persist accepted genome to lineage_snapshots table."""
         try:
-            # Collect recent session ratings for the snapshot
             async with cortex._pool.acquire() as conn:
                 rows = await conn.fetch("""
                     SELECT id, rating, outcome FROM agent_sessions
@@ -469,10 +524,12 @@ class Evolver:
                     for r in rows
                 ]
 
-                phase_config_json   = json.dumps(genome.phase_config)
-                hormone_genome_json = json.dumps({
-                    name: {"baseline": g.baseline, "decay_rate": g.decay_rate}
-                    for name, g in genome.hormone_genes.items()
+                tg = genome.retrieval.thermal
+                phase_config_json = json.dumps(genome.metacognition.phase_config)
+                state_genome_json = json.dumps({
+                    name: {"baseline": g.baseline, "decay_rate": g.decay_rate,
+                           "subsystem": g.subsystem}
+                    for name, g in genome.diffusion.state_genes.items()
                 })
                 ratings_json = json.dumps(session_ratings)
 
@@ -481,7 +538,7 @@ class Evolver:
                         (phase_config, hormone_genome, fitness, session_ratings, generation, notes)
                     VALUES ($1, $2, $3, $4, $5, $6)
                 """,
-                    phase_config_json, hormone_genome_json,
+                    phase_config_json, state_genome_json,
                     genome.fitness, ratings_json,
                     genome.generation, genome.notes,
                 )
@@ -492,12 +549,13 @@ class Evolver:
     # STATS + CLEANUP
     # ------------------------------------------------------------------
     def stats(self) -> dict:
+        pc = getattr(self._current_genome, "metacognition", None)
         return {
             "generation":             self._generation,
             "cycles_run":             self._cycles_run,
             "last_cycle":             self._last_cycle,
             "last_accepted_fitness":  self._last_accepted_fitness,
-            "current_phase_config":   getattr(self._current_genome, "phase_config", {}),
+            "current_phase_config":   pc.phase_config if pc else {},
         }
 
     async def close(self):

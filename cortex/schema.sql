@@ -22,6 +22,9 @@ CREATE TABLE IF NOT EXISTS memories (
     emotion         TEXT            NOT NULL DEFAULT 'neutral'
                         CHECK (emotion IN ('neutral','joy','fear','anger','surprise',
                                            'sadness','disgust','curiosity','frustration')),
+    -- renamed mechanical equivalents (activation_tag + signal_polarity)
+    -- emotion/valence kept for backwards compat; new writes use the renamed names
+    activation_tag  TEXT            GENERATED ALWAYS AS (emotion) STORED,
     confidence      REAL            NOT NULL DEFAULT 1.0
                         CHECK (confidence >= 0.0 AND confidence <= 1.0),
     context         TEXT            NOT NULL DEFAULT '',
@@ -114,26 +117,54 @@ CREATE TABLE IF NOT EXISTS priming_activations (
 
 
 -- ============================================================
--- HORMONE_BUS — Global chemical state snapshot
--- Single-row table, upserted on every pulse
+-- SYSTEM_STATE_VECTOR — Bounded cognitive control state
+-- Replaces hormone_bus. Single-row singleton, upserted every pulse.
+-- Three typed groups: drives (compete), loads (accumulate), regulators (drift).
+-- All values strictly ∈ [0.0, 1.0] — enforced at the StateEngine layer.
 -- ============================================================
-CREATE TABLE IF NOT EXISTS hormone_bus (
-    id              INTEGER PRIMARY KEY DEFAULT 1,  -- always row 1
-    dopamine        REAL NOT NULL DEFAULT 0.7,      -- reward, motivation
-    serotonin       REAL NOT NULL DEFAULT 0.6,      -- mood stability
-    cortisol        REAL NOT NULL DEFAULT 0.2,      -- stress load
-    adrenaline      REAL NOT NULL DEFAULT 0.0,      -- acute threat response
-    melatonin       REAL NOT NULL DEFAULT 0.0,      -- sleep pressure
-    oxytocin        REAL NOT NULL DEFAULT 0.5,      -- social/bonding signal
-    norepinephrine  REAL NOT NULL DEFAULT 0.3,      -- alertness/attention
-    valence         TEXT NOT NULL DEFAULT 'neutral', -- positive|negative|neutral
-    arousal         REAL NOT NULL DEFAULT 0.5,      -- energy/activation level
-    dominant_emotion TEXT NOT NULL DEFAULT 'neutral',
-    updated_at      DOUBLE PRECISION NOT NULL DEFAULT extract(epoch from now()),
-    CONSTRAINT hormone_bus_singleton CHECK (id = 1)
+CREATE TABLE IF NOT EXISTS system_state_vector (
+    id                  INTEGER PRIMARY KEY DEFAULT 1,  -- always row 1
+
+    -- Drives (compete via softmax; push behavior)
+    reward_drive        REAL NOT NULL DEFAULT 0.30
+                            CHECK (reward_drive BETWEEN 0.0 AND 1.0),
+    novelty_exploration REAL NOT NULL DEFAULT 0.30
+                            CHECK (novelty_exploration BETWEEN 0.0 AND 1.0),
+
+    -- Loads (accumulate under pressure; suppress drives)
+    stress_load         REAL NOT NULL DEFAULT 0.20
+                            CHECK (stress_load BETWEEN 0.0 AND 1.0),
+    sleep_pressure      REAL NOT NULL DEFAULT 0.10
+                            CHECK (sleep_pressure BETWEEN 0.0 AND 1.0),
+
+    -- Regulators (modulate transfer functions; drift toward baseline)
+    focus_stability     REAL NOT NULL DEFAULT 0.55
+                            CHECK (focus_stability BETWEEN 0.0 AND 1.0),
+    social_trust        REAL NOT NULL DEFAULT 0.50
+                            CHECK (social_trust BETWEEN 0.0 AND 1.0),
+
+    -- Derived
+    cognitive_stance    TEXT NOT NULL DEFAULT 'balanced',
+    updated_at          DOUBLE PRECISION NOT NULL DEFAULT extract(epoch from now()),
+    CONSTRAINT state_vector_singleton CHECK (id = 1)
 );
 
-INSERT INTO hormone_bus (id) VALUES (1) ON CONFLICT DO NOTHING;
+INSERT INTO system_state_vector (id) VALUES (1) ON CONFLICT DO NOTHING;
+
+-- Backwards-compatibility view: maps old hormone_bus column names to new ones.
+-- Allows legacy code to keep reading without immediate refactor.
+CREATE OR REPLACE VIEW hormone_bus AS
+    SELECT
+        id,
+        reward_drive        AS dopamine,
+        novelty_exploration AS norepinephrine,
+        stress_load         AS cortisol,
+        sleep_pressure      AS melatonin,
+        focus_stability     AS acetylcholine,
+        social_trust        AS oxytocin,
+        cognitive_stance    AS valence,
+        updated_at
+    FROM system_state_vector;
 
 
 -- ============================================================
@@ -328,3 +359,53 @@ EXCEPTION WHEN duplicate_column THEN NULL; END $$;
 CREATE INDEX IF NOT EXISTS memories_thermal_node_idx
     ON memories (thermal_node_id)
     WHERE thermal_node_id IS NOT NULL;
+
+
+-- ============================================================
+-- CAUSAL_TRACE — Mutation attribution ledger (Evolution Engine)
+-- Records the full causal chain:
+--   mutation → parameter_delta → state_vector_delta
+--             → behavior_shift → fitness_delta
+-- Enables control vs treatment shadow evaluation queries.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS causal_trace (
+    trace_id        UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+    -- Mutation layer
+    mutation_id     UUID,
+    subsystem       TEXT NOT NULL DEFAULT '',   -- RetrievalGenome|DiffusionGenome|MetacognitionGenome
+    parameter_name  TEXT NOT NULL DEFAULT '',
+    old_value       REAL,
+    new_value       REAL,
+
+    -- State impact (captures StateVector snapshot before + after)
+    state_before    JSONB NOT NULL DEFAULT '{}',
+    state_after     JSONB NOT NULL DEFAULT '{}',
+    state_delta     JSONB NOT NULL DEFAULT '{}',
+
+    -- Behavior impact
+    behavior_before JSONB NOT NULL DEFAULT '{}',  -- {task_duration, memory_hits, error_rate, ...}
+    behavior_after  JSONB NOT NULL DEFAULT '{}',
+    behavior_delta  JSONB NOT NULL DEFAULT '{}',
+
+    -- Fitness outcome
+    fitness_before  REAL NOT NULL DEFAULT 0.0,
+    fitness_after   REAL NOT NULL DEFAULT 0.0,
+    fitness_delta   REAL GENERATED ALWAYS AS (fitness_after - fitness_before) STORED,
+
+    -- Stability at time of evaluation
+    stability       REAL,                        -- variance(state_vector window)
+
+    -- Context
+    task_id         TEXT,
+    pulse           BIGINT NOT NULL DEFAULT 0,
+    eval_mode       TEXT NOT NULL DEFAULT 'shadow'
+                        CHECK (eval_mode IN ('shadow', 'live', 'replay')),
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS causal_trace_mutation_idx  ON causal_trace (mutation_id);
+CREATE INDEX IF NOT EXISTS causal_trace_subsystem_idx ON causal_trace (subsystem);
+CREATE INDEX IF NOT EXISTS causal_trace_fitness_idx   ON causal_trace (fitness_delta DESC);
+CREATE INDEX IF NOT EXISTS causal_trace_created_idx   ON causal_trace (created_at DESC);
+CREATE INDEX IF NOT EXISTS causal_trace_pulse_idx     ON causal_trace (pulse DESC);

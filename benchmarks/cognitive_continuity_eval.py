@@ -32,6 +32,7 @@ from typing import List
 sys.path.insert(0, ".")
 from cortex.thermorphic import ThermorphicSubstrate, _hrr_dot, ConceptNode
 import cortex.thermorphic as _thermo_mod
+from cortex.protocols import IBenchmarkableSubstrate, assert_contract
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
 MODEL      = "gemma3"  # Standard test model
@@ -107,12 +108,12 @@ class FlatVectorDB:
     def inject(self, content: str, importance: float):
         # We reuse the substrate's HRR binding for a fair embedding comparison
         sub = ThermorphicSubstrate()
-        node = sub.inject(content, temperature=1.0, tags=["chronosdb"], dims=64)
+        node = sub.inject(content, temperature=1.0, tags=["chronosdb"], dims=256)
         self.nodes.append(node)
 
     def recall(self, query: str, top_k=5) -> List[ConceptNode]:
         sub = ThermorphicSubstrate()
-        query_node = sub.inject(query, temperature=1.0, tags=[], dims=64)
+        query_node = sub.inject(query, temperature=1.0, tags=[], dims=256)
         
         scored = []
         q_words = set(query.lower().split())
@@ -144,8 +145,8 @@ def run_benchmark(dims=64, freeze_dwell=5, pulses=15):
     print(f"[*] Simulating 100 timeline events: {len(truths)} core truths, {len(noise)} noise items.")
     
     flat_db   = FlatVectorDB()
-    thermo_db = ThermorphicSubstrate()
-    thermo_db.DIMS = dims
+    thermo_db: IBenchmarkableSubstrate = ThermorphicSubstrate(dims=dims, freeze_dwell=freeze_dwell)
+    assert_contract(thermo_db, expected_dims=dims)
     
     # 2. Inject into both systems
     print("[*] Learning phase...")
@@ -158,7 +159,6 @@ def run_benchmark(dims=64, freeze_dwell=5, pulses=15):
         
     # 3. Time passes for the agent... (Pulse loop runs)
     print(f"[*] Weeks pass... (Running {pulses} Thermorphic Pulses)")
-    _thermo_mod.FREEZE_DWELL = freeze_dwell
     for _ in range(pulses):
         thermo_db.pulse()
         
@@ -202,7 +202,7 @@ def run_benchmark(dims=64, freeze_dwell=5, pulses=15):
         # System A: Flat Vector DB
         flat_recall = flat_db.recall(t['q'], top_k=3)
         flat_context = " ".join([n.content for n in flat_recall])
-        flat_signal = sum(1 for n in flat_recall if any(w in n.content for w in t['truth'].split()[-3:]))
+        flat_signal = sum(1 for n in flat_recall if t['truth'].lower() in n.content.lower())
         results_flat["snr"].append(flat_signal / 3.0)
         
         import asyncio
@@ -211,7 +211,7 @@ def run_benchmark(dims=64, freeze_dwell=5, pulses=15):
         thermo_recall = asyncio.run(thermo_db.recall(t['q'], top_k=3))
         thermo_context = " ".join([n.content for n in thermo_recall])
         # Include emergent fusions as signal if they contain the truth
-        thermo_signal = sum(1 for n in thermo_recall if any(w in n.content for w in t['truth'].split()[-3:]))
+        thermo_signal = sum(1 for n in thermo_recall if t['truth'].lower() in n.content.lower())
         results_thermo["snr"].append(thermo_signal / 3.0)
         
         prompt_template = """Use ONLY the provided context to answer the question.
@@ -269,7 +269,7 @@ Answer concisely."""
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run Cognitive Continuity Evaluation")
-    parser.add_argument("--dims", type=int, default=64, help="Embedding dimensions")
+    parser.add_argument("--dims", type=int, default=256, help="Embedding dimensions")
     parser.add_argument("--freeze-dwell", type=int, default=5, help="Pulses to freeze")
     parser.add_argument("--pulses", type=int, default=15, help="Number of pulses to run")
     args = parser.parse_args()

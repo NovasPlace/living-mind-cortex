@@ -294,14 +294,28 @@ def _synthesize_content(a: ConceptNode, b: ConceptNode) -> str:
 class ThermorphicSubstrate:
     """
     The full thermorphic computing engine.
+    Formally implements IBenchmarkableSubstrate (cortex/protocols.py).
 
     This is a knowledge graph where information has temperature.
     Concepts flow, fuse, crystallize, and boil purely through
     thermodynamic physics — no programmed rules for what to remember
     or forget. The physics decides.
+
+    IBenchmarkableSubstrate contracts honored:
+      1. Construction  — dims accepted AND applied (asserted, not advisory)
+      2. Lifecycle     — reset() fully purges all state
+      3. Pulse semantics — freeze_dwell is per-instance, not module-global
     """
 
-    def __init__(self):
+    def __init__(self, dims: int = 256, freeze_dwell: int = FREEZE_DWELL):
+        # Contract 1: dims applied — expose as instance attribute so callers
+        # can assert the OUTCOME (substrate.dims == expected), not just the API.
+        self.dims: int = dims
+
+        # Contract 3: freeze_dwell per-instance so benchmark scenarios can
+        # vary it without module-global cross-contamination.
+        self.freeze_dwell: int = freeze_dwell
+
         self.nodes:         Dict[str, ConceptNode] = {}
         self.fusion_log:    List[FusionEvent]      = []
         self.pulse_count:   int                    = 0
@@ -310,7 +324,14 @@ class ThermorphicSubstrate:
         self._heat_injections: List[Tuple[str, float, str]] = []  # queued heat events
         self.SAFE_MUTATION_GAP = self._calculate_safe_mutation_gap()
         from cortex.hologram import HolographicSuperposition
-        self.hsm = HolographicSuperposition(dims=256)
+        self.hsm = HolographicSuperposition(dims=self.dims)
+
+        # Behavioral assertion — validates outcome, not API surface.
+        # A constructor that accepts dims and ignores it will fail here.
+        assert self.hsm.dims == self.dims, (
+            f"HSM dims mismatch: hsm.dims={self.hsm.dims} != requested {self.dims}. "
+            f"HolographicSuperposition did not apply the dims argument."
+        )
 
     def _calculate_safe_mutation_gap(self) -> int:
         """Dynamically compute system collision constant based on decay physics."""
@@ -322,6 +343,21 @@ class ThermorphicSubstrate:
         return gap
         
     # ── PUBLIC API ─────────────────────────────────────────────────────────
+
+    def reset(self) -> None:
+        """
+        Contract 2: Lifecycle — fully purge all substrate state.
+        Idempotent. Safe to call between benchmark scenarios.
+        Does NOT reset dims or freeze_dwell (construction params are stable).
+        """
+        self.nodes.clear()
+        self.fusion_log.clear()
+        self._heat_injections.clear()
+        self.pulse_count   = 0
+        self.total_fusions = 0
+        self.total_crystals = 0
+        from cortex.hologram import HolographicSuperposition
+        self.hsm = HolographicSuperposition(dims=self.dims)
 
     def inject(
         self,
@@ -388,105 +424,113 @@ class ThermorphicSubstrate:
           3. Fusion       — adjacent hot node pairs spawn emergent concepts
           4. Crystallize  — sufficiently cold nodes lock into long-term memory
         """
-        self.pulse_count += 1
-        
-        # HSM: Superimpose the current hot path
-        hot_nodes = {nid: n for nid, n in self.nodes.items() if n.temperature > FREEZE_TEMP}
-        self.hsm.update(hot_nodes)
-        
-        events = {
-            "pulse":      self.pulse_count,
-            "diffusions": 0,
-            "fusions":    [],
-            "crystals":   [],
-            "boiling":    [],
-        }
+        global FREEZE_DWELL
+        _memoized_global_dwell = FREEZE_DWELL
+        FREEZE_DWELL = self.freeze_dwell
 
-        # ── Phase 1: Thermal Diffusion ──────────────────────────────────
-        # Each hot node pushes heat to its cooler neighbors.
-        # Magnitude follows Fourier's law: q = α × (T_hot - T_cool)
-        heat_deltas: Dict[str, float] = defaultdict(float)
+        try:
+            self.pulse_count += 1
+            
+            # HSM: Superimpose the current hot path
+            hot_nodes = {nid: n for nid, n in self.nodes.items() if n.temperature > FREEZE_TEMP}
+            self.hsm.update(hot_nodes)
+            
+            events = {
+                "pulse":      self.pulse_count,
+                "diffusions": 0,
+                "fusions":    [],
+                "crystals":   [],
+                "boiling":    [],
+            }
 
-        for node_id, node in self.nodes.items():
-            if node.immutable or not node.edges:
-                continue
-            for neighbor_id in node.edges:
-                if neighbor_id not in self.nodes:
+            # ── Phase 1: Thermal Diffusion ──────────────────────────────────
+            # Each hot node pushes heat to its cooler neighbors.
+            # Magnitude follows Fourier's law: q = α × (T_hot - T_cool)
+            heat_deltas: Dict[str, float] = defaultdict(float)
+
+            for node_id, node in self.nodes.items():
+                if node.immutable or not node.edges:
                     continue
-                neighbor = self.nodes[neighbor_id]
-                delta_t  = node.temperature - neighbor.temperature
-                if delta_t > 0 and not neighbor.immutable:
-                    flow_rate = ALPHA * delta_t
-                    heat_deltas[neighbor_id] += flow_rate * 0.5
-                    heat_deltas[node_id]     -= flow_rate * 0.5
-                    events["diffusions"]     += 1
+                for neighbor_id in node.edges:
+                    if neighbor_id not in self.nodes:
+                        continue
+                    neighbor = self.nodes[neighbor_id]
+                    delta_t  = node.temperature - neighbor.temperature
+                    if delta_t > 0 and not neighbor.immutable:
+                        flow_rate = ALPHA * delta_t
+                        heat_deltas[neighbor_id] += flow_rate * 0.5
+                        heat_deltas[node_id]     -= flow_rate * 0.5
+                        events["diffusions"]     += 1
 
-        for node_id, delta in heat_deltas.items():
-            if node_id in self.nodes:
-                new_temp = self.nodes[node_id].temperature + delta
-                self.nodes[node_id].temperature = max(AMBIENT_TEMPERATURE, new_temp)
+            for node_id, delta in heat_deltas.items():
+                if node_id in self.nodes:
+                    new_temp = self.nodes[node_id].temperature + delta
+                    self.nodes[node_id].temperature = max(AMBIENT_TEMPERATURE, new_temp)
 
-        # ── Phase 2: Passive Radiation ──────────────────────────────────
-        for node in self.nodes.values():
-            node.cool(EMISSION_RATE)
-            if node.state == "boiling":
-                events["boiling"].append(node.id)
+            # ── Phase 2: Passive Radiation ──────────────────────────────────
+            for node in self.nodes.values():
+                node.cool(EMISSION_RATE)
+                if node.state == "boiling":
+                    events["boiling"].append(node.id)
 
-        # ── Phase 3: Semantic Fusion ────────────────────────────────────
-        # Find pairs of adjacent hot nodes that exceed the fusion threshold.
-        # Cap at MAX_EMISSIONS fusions per pulse (thermodynamic rate limit).
-        fusions_this_pulse = 0
-        checked_pairs = set()
+            # ── Phase 3: Semantic Fusion ────────────────────────────────────
+            # Find pairs of adjacent hot nodes that exceed the fusion threshold.
+            # Cap at MAX_EMISSIONS fusions per pulse (thermodynamic rate limit).
+            fusions_this_pulse = 0
+            checked_pairs = set()
 
-        for node_id, node in list(self.nodes.items()):
-            if fusions_this_pulse >= MAX_EMISSIONS:
-                break
-            if node.immutable or node.temperature < 0.5:
-                continue
-
-            for neighbor_id in node.edges:
-                if neighbor_id not in self.nodes:
-                    continue
-                pair_key = tuple(sorted([node_id, neighbor_id]))
-                if pair_key in checked_pairs:
-                    continue
-                checked_pairs.add(pair_key)
-
-                neighbor = self.nodes[neighbor_id]
-                if neighbor.immutable:
+            for node_id, node in list(self.nodes.items()):
+                if fusions_this_pulse >= MAX_EMISSIONS:
+                    break
+                if node.immutable or node.temperature < 0.5:
                     continue
 
-                combined_temp = node.temperature + neighbor.temperature
-                if combined_temp >= FUSION_THRESHOLD:
-                    child = self._fuse(node, neighbor)
-                    event = FusionEvent(
-                        parent_a_id    = node_id,
-                        parent_b_id    = neighbor_id,
-                        child_id       = child.id,
-                        child_content  = child.content,
-                        temp_at_fusion = combined_temp,
-                        pulse          = self.pulse_count,
-                    )
-                    self.fusion_log.append(event)
-                    events["fusions"].append({
-                        "parents": [node_id, neighbor_id],
-                        "child":   child.id,
-                        "content": child.content,
-                        "temp":    round(combined_temp, 3),
-                    })
-                    fusions_this_pulse  += 1
-                    self.total_fusions  += 1
+                for neighbor_id in node.edges:
+                    if neighbor_id not in self.nodes:
+                        continue
+                    pair_key = tuple(sorted([node_id, neighbor_id]))
+                    if pair_key in checked_pairs:
+                        continue
+                    checked_pairs.add(pair_key)
 
-        # ── Phase 4: Crystallization ────────────────────────────────────
-        for node_id, node in self.nodes.items():
-            if not node.immutable and node.cool_ticks >= FREEZE_DWELL:
-                node.immutable  = True
-                node.state      = "crystallized"
-                node.temperature = 0.0
-                self.total_crystals += 1
-                events["crystals"].append(node_id)
+                    neighbor = self.nodes[neighbor_id]
+                    if neighbor.immutable:
+                        continue
 
-        return events
+                    combined_temp = node.temperature + neighbor.temperature
+                    if combined_temp >= FUSION_THRESHOLD:
+                        child = self._fuse(node, neighbor)
+                        event = FusionEvent(
+                            parent_a_id    = node_id,
+                            parent_b_id    = neighbor_id,
+                            child_id       = child.id,
+                            child_content  = child.content,
+                            temp_at_fusion = combined_temp,
+                            pulse          = self.pulse_count,
+                        )
+                        self.fusion_log.append(event)
+                        events["fusions"].append({
+                            "parents": [node_id, neighbor_id],
+                            "child":   child.id,
+                            "content": child.content,
+                            "temp":    round(combined_temp, 3),
+                        })
+                        fusions_this_pulse  += 1
+                        self.total_fusions  += 1
+
+            # ── Phase 4: Crystallization ────────────────────────────────────
+            for node_id, node in self.nodes.items():
+                if not node.immutable and node.cool_ticks >= FREEZE_DWELL:
+                    node.immutable  = True
+                    node.state      = "crystallized"
+                    node.temperature = 0.0
+                    self.total_crystals += 1
+                    events["crystals"].append(node_id)
+
+            return events
+
+        finally:
+            FREEZE_DWELL = _memoized_global_dwell
 
     async def recall(self, query_content: str, top_k: int = 5) -> List[ConceptNode]:
         """
