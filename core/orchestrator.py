@@ -19,7 +19,7 @@ from core.task_engine import task_engine
 
 OLLAMA_URL  = "http://localhost:11434/api/generate"
 MODEL       = "gemma4-auditor"
-TIMEOUT     = 30  # seconds — brain can't hang the pulse loop
+TIMEOUT     = 120 # seconds — bumped due to CPU inference fallback
 SKILLS_DIR  = Path(__file__).resolve().parent.parent / "skills"
 
 # Decision types the brain can emit
@@ -99,10 +99,23 @@ class Brain:
                 return None
 
             # 3.1. FORCED ACTUATION GUARDRAIL (Sovereign Gateway DNA)
-            # If the thought implies web navigation but type=explore, flip to act
+            # If the user gave a direct UI command, don't let a weak model simulate or explore.
+            is_directive = "DIRECTIVE]" in user_stimulus
+            if is_directive and decision["type"] in ("explore", "reflect"):
+                print(f"[BRAIN] Forced Actuation: Overriding {decision['type'].upper()} to ACT due to UI mission directive.")
+                decision["type"] = "act"
+                
+                if not decision.get("tool_call") and agent_def and "shell_exec" in agent_def.tools:
+                    decision["tool_call"] = "shell_exec"
+                    if "os" in user_stimulus.lower() or "check" in user_stimulus.lower() or "system" in user_stimulus.lower():
+                        decision["arguments"] = {"cmd": "uname -a && uptime"}
+                    else:
+                        decision["arguments"] = {"cmd": "echo 'Acknowledged Directive.'"}
+            
+            # Original web navigation guardrail
             nav_keywords = ["navigate", "browse", "go to", "search", "click", "type", "scroll"]
             if decision["type"] == "explore" and any(k in decision["thought"].lower() for k in nav_keywords):
-                print(f"[BRAIN] {pulse} - Forced Actuation: Flipping EXPLORE to ACT for navigation intent.")
+                print(f"[BRAIN] Forced Actuation: Flipping EXPLORE to ACT for navigation intent.")
                 decision["type"] = "act"
                 # If tool_call is missing, try to infer it
                 if not decision.get("tool_call"):
@@ -345,7 +358,8 @@ JSON:
             if d["type"] not in DECISION_TYPES:
                 d["type"] = "reflect"
             return d
-        except (json.JSONDecodeError, ValueError):
+        except (json.JSONDecodeError, ValueError) as e:
+            print(f"[BRAIN ERROR] JSON parse failed: {e}\n[RAW TEXT START]\n{raw}\n[RAW TEXT END]")
             return None
 
     # ------------------------------------------------------------------

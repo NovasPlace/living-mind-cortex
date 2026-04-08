@@ -107,8 +107,15 @@ class ExecutionEngine:
         msg = f"→ Motor Cortex executing autonomous tool `{tool}`: {cmd_display}"
         print(f"[EXECUTION] {msg}")
         
-        # Broadcast function_fire to the UI telemetry!
-        await manager.broadcast_event("function_fire", f"{tool}: {cmd_display}")
+        # The UI specifically expects {"type": "function_fire", "tool": tool, "args": cmd_display}
+        # We bypass the generic broadcast_event wrapper that forces {"type": "event", "event": "function_fire"}
+        payload = {"type": "function_fire", "tool": tool, "args": cmd_display}
+        import json
+        for conn in manager.active_connections:
+            try:
+                await conn.send_text(json.dumps(payload))
+            except:
+                pass
         
         # In a fully sovereign test, we don't wait for human WS approval.
         # We spawn the tool async immediately since we trust the Sandbox.
