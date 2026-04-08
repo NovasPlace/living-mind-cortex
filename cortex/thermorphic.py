@@ -39,8 +39,11 @@ import time
 import uuid
 import random
 import json
+import numpy as np
+import struct
+import hashlib
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 from collections import defaultdict
 
 
@@ -82,8 +85,7 @@ class ConceptNode:
     immutable:    bool          = False   # True once crystallized
 
     # Holographic vector (simplified: random unit vector in R^256)
-    # In production: proper HRR via numpy circular convolution
-    hvec:         List[float]   = field(default_factory=list)
+    hvec:         np.ndarray    = field(default_factory=lambda: np.zeros(256))
 
     def heat(self, delta: float, source: str = "external"):
         """Inject heat into this concept. Boosts temperature and resets cool counter."""
@@ -150,38 +152,40 @@ class FusionEvent:
 
 # ── HRR Helper (Holographic Reduced Representation) ───────────────────────────
 
-def _random_hvec(dims: int = 256) -> List[float]:
-    """Generate a random unit hypervector."""
-    v    = [random.gauss(0, 1) for _ in range(dims)]
-    norm = math.sqrt(sum(x*x for x in v)) or 1.0
-    return [x / norm for x in v]
+_TWO_PI = 2.0 * math.pi
 
-def _hrr_bind(v1: List[float], v2: List[float]) -> List[float]:
-    """
-    Circular convolution binding — the core HRR operation.
-    Encodes the RELATIONSHIP between two concepts into a single vector.
-    The result is dissimilar to both parents (compressed joint representation).
-    """
-    n      = len(v1)
-    result = []
-    for i in range(n):
-        val = sum(v1[j] * v2[(i - j) % n] for j in range(n))
-        result.append(val)
-    # Re-normalize to prevent blowing up mathematically
-    norm = math.sqrt(sum(x*x for x in result)) or 1.0
-    return [x / norm for x in result]
+def encode_atom(word: str, dim: int = 256) -> np.ndarray:
+    """Deterministic phase vector via SHA-256 counter blocks."""
+    values_per_block = 16
+    blocks_needed = math.ceil(dim / values_per_block)
 
-def _hrr_dot(v1: List[float], v2: List[float]) -> float:
-    """Cosine similarity between two hypervectors."""
-    return sum(a*b for a, b in zip(v1, v2))
+    uint16_values: list[int] = []
+    for i in range(blocks_needed):
+        digest = hashlib.sha256(f"{word}:{i}".encode()).digest()
+        uint16_values.extend(struct.unpack("<16H", digest))
+
+    phases = np.array(uint16_values[:dim], dtype=np.float64) * (_TWO_PI / 65536.0)
+    return phases
+
+def _random_hvec(dims: int = 256) -> np.ndarray:
+    """Random phase vector in [0, 2π). Used when no content string available."""
+    return np.random.default_rng().uniform(0, _TWO_PI, dims)
+
+def _hrr_bind(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Phase addition. O(N), no magnitude collapse, no renormalization needed."""
+    return (a + b) % _TWO_PI
+
+def _hrr_dot(a: np.ndarray, b: np.ndarray) -> float:
+    """Phase cosine similarity. Range [-1, 1]."""
+    return float(np.mean(np.cos(a - b)))
 
 # ============================================================
 #  CAUSAL BINDING CONSTANTS
 # ============================================================
-_causal_rng = random.Random(42)
+_causal_rng = np.random.default_rng(seed=42)
 _causal_perms = {}
 
-def _hrr_permute(vec: List[float]) -> List[float]:
+def _hrr_permute(vec: np.ndarray) -> np.ndarray:
     """
     Apply a fixed causal permutation to a holographic vector.
     Breaks HRR commutativity: bind(cause, permute(effect)).
@@ -189,11 +193,10 @@ def _hrr_permute(vec: List[float]) -> List[float]:
     """
     dim = len(vec)
     if dim not in _causal_perms:
-        perm = list(range(dim))
+        perm = np.arange(dim)
         _causal_rng.shuffle(perm)
         _causal_perms[dim] = perm
-    perm = _causal_perms[dim]
-    return [vec[i] for i in perm]
+    return vec[_causal_perms[dim]]
 
 
 def _synthesize_content(a: ConceptNode, b: ConceptNode) -> str:
@@ -246,12 +249,23 @@ class ThermorphicSubstrate:
         anchor_temperature: float = 0.0,
         tags:        List[str]  = None,
         edges_to:    List[str]  = None,
-        dims:        int        = 64,   # reduced dims for demo; use 256+ in production
+        dims:        int        = 256,
     ) -> ConceptNode:
         """
         Inject a new concept into the substrate at a given temperature.
         Higher temperature = more "urgent" / salient / recently encountered.
         """
+        from cortex.move_subsystem import move_guard
+        
+        # Geometrically encode the content
+        encoded_hvec = encode_atom(content, dims)
+
+        # MoVE Filter: Cross-attend against identity anchors to suppress hallucinated context
+        identity_hvecs = [n.hvec for n in self.nodes.values() if n.anchor_temperature > 0.0]
+        if identity_hvecs:
+            floors = np.array(identity_hvecs)
+            encoded_hvec = move_guard.filter(encoded_hvec, floors)
+
         node = ConceptNode(
             id          = str(uuid.uuid4())[:8],
             content     = content,
@@ -260,7 +274,7 @@ class ThermorphicSubstrate:
             tags        = tags or [],
             edges       = edges_to or [],
             born_at_pulse = self.pulse_count,
-            hvec        = _random_hvec(dims),
+            hvec        = encoded_hvec,
         )
         self.nodes[node.id] = node
 
@@ -474,10 +488,10 @@ class ThermorphicSubstrate:
         child_content = _synthesize_content(a, b)
 
         # Holographic binding — asymmetric permutation encodes causality
-        if cause.hvec and effect.hvec:
+        if cause.hvec is not None and effect.hvec is not None:
             child_hvec = _hrr_bind(cause.hvec, _hrr_permute(effect.hvec))
         else:
-            child_hvec = _random_hvec(64)
+            child_hvec = _random_hvec(256)
 
         child = ConceptNode(
             id          = str(uuid.uuid4())[:8],

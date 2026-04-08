@@ -5,6 +5,34 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [2.1.0] — 2026-04-07
+
+### 🎯 Focus: Cognitive Architecture Hardening (Phase Substrate & Neural Guard)
+
+This release stabilizes the underlying mathematical vectors of the Cortex, mitigating the scalar magnitude collapse of O(N^2) HRR by transitioning purely to phase encoding O(N). It also introduces the MoVE cross-attention hallucination filter to ensure episodics never permanently overwrite sovereign identity anchors, and an armed-but-passive GRPO procedural distillation pipeline scoring via the MoVE engine.
+
+### Added
+
+#### MoVE Cross-Attention Guard (`cortex/move_subsystem.py`) — *new file*
+- True `DualVirtualTransformerBlock` cross-attends incoming episodic memory candidate injections against crystallised identity floor vectors.
+- Projects 256-dim phase coordinates into 768-dim space, conditions, and projects safely down to a valid $[0, 2\pi)$ vector.
+- Wired natively into `ThermorphicSubstrate.inject`. 
+
+#### Sovereign Distillation Pipeline (`cortex/distillation.py`) — *new file*
+- Armed-not-fired GRPO procedural skill acquisition from crystallized causal records (frozen nodes with `[CAUSAL]`).
+- Includes a non-circular reward function: alignment is scored mathematically via `move_guard.filter()` cosine similarities, bypassing LLM-as-a-judge completely.
+- Hardcoded deterministic `SOVEREIGN_VIOLATION_MARKERS` to strictly penalize persona or security breaks before reward clipping.
+
+### Changed
+
+#### Phase-Encoded Substrate (`cortex/thermorphic.py`)
+- Replaced $O(N^2)$ array slicing/renormalization for Holographic Reduced Representations (HRR). Memory encoding and fusion relies symmetrically now on $O(N)$ phase vector addition modulo $2\pi$. 
+- `ConceptNode.hvec` now strongly typed strictly to NumPy arrays shaped optimally to `[256,]`. 
+- Overhauled causal bindings (A -> B arrow) using a dimensional-safe dynamic permutation array `_hrr_permute`. Injection maps explicitly via standard SHA-256 blocks to establish deterministic geometry.
+- The `ThermorphicSubstrate.inject()` default dimensionality expanded canonically to 256. 
+
+---
+
 ## [2.0.0] — 2026-04-07
 
 ### 🎯 Focus: Enterprise Agent Cognitive Substrate
