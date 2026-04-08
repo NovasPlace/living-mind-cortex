@@ -1,0 +1,635 @@
+"""
+████████╗██╗  ██╗███████╗██████╗ ███╗   ███╗ ██████╗ ██████╗ ██████╗ ██╗  ██╗██╗ ██████╗
+╚══██╔══╝██║  ██║██╔════╝██╔══██╗████╗ ████║██╔═══██╗██╔══██╗██╔══██╗██║  ██║██║██╔════╝
+   ██║   ███████║█████╗  ██████╔╝██╔████╔██║██║   ██║██████╔╝██████╔╝███████║██║██║
+   ██║   ██╔══██║██╔══╝  ██╔══██╗██║╚██╔╝██║██║   ██║██╔══██╗██╔═══╝ ██╔══██║██║██║
+   ██║   ██║  ██║███████╗██║  ██║██║ ╚═╝ ██║╚██████╔╝██║  ██║██║     ██║  ██║██║╚██████╗
+   ╚═╝   ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝ ╚═════╝ ╚═╝  ╚═╝╚═╝     ╚═╝  ╚═╝╚═╝ ╚═════╝
+
+T H E R M O M O R P H I C   C O M P U T I N G   S U B S T R A T E
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+"What if information had temperature?"
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+CONCEPT:
+
+  Standard computing is athermal — entropy is a bug.
+  We treat it as a feature.
+
+  Thermorphic Computing is a computing substrate where:
+
+    1. Every concept has a TEMPERATURE (thermal energy = access frequency
+       + emotional salience + recency)
+
+    2. Concepts FLOW toward cool regions via semantic diffusion
+       (hot ideas spread into neighboring concept space)
+
+    3. When two hot concepts collide they undergo SEMANTIC FUSION —
+       automatically generating a new emergent concept node
+
+    4. Cool concepts below a FREEZING THRESHOLD crystallize into
+       immutable long-term memory (Boltzmann crystallization)
+
+    5. The entire graph has a GLOBAL HEAT EQUATION that governs
+       information flow — knowledge propagates like heat through metal
+
+  This is NOT a metaphor. The math is real thermodynamics.
+  Applied to knowledge graphs.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+THEORETICAL BASIS:
+
+  Heat equation:  ∂T/∂t = α∇²T + Q(x,t)
+  where:
+    T     = concept temperature (salience field)
+    α     = thermal diffusivity (how fast ideas spread)
+    ∇²T   = Laplacian of temperature over concept graph
+    Q     = external heat source (new information injection)
+
+  Fusion condition: when T(A) + T(B) > FUSION_THRESHOLD
+  and A,B are semantically adjacent:
+    → spawn C = HRR_bind(A, B)  [holographic reduced representation]
+    → C.temperature = (T(A) + T(B)) * FUSION_YIELD
+    → A.temperature *= FUSION_DRAIN
+    → B.temperature *= FUSION_DRAIN
+
+  Crystallization: when T(node) < FREEZE_TEMP for > FREEZE_DWELL pulses
+    → node.state = "crystallized"
+    → node.immutable = True
+    → node.temperature = 0  (perfect crystal = zero entropy)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS IS NOVEL:
+
+  Existing art:
+    - Ebbinghaus decay → one-directional forgetting (no spreading)
+    - Spreading activation → propagates activation, not heat
+    - Vector symbolic architectures → no thermodynamics
+    - Knowledge graphs → static edges, no diffusion physics
+
+  Thermorphic gap:
+    - Concepts self-organize via physics, not programmed rules
+    - Emergent concept fusion — the system invents new nodes
+    - Crystallization produces a two-tier memory automatically
+      (molten working memory + crystalline long-term store)
+    - Global heat equation means distant concepts interact
+      through the thermal field, not just direct edges
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
+
+import math
+import time
+import uuid
+import random
+import json
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Tuple
+from collections import defaultdict
+
+
+# ── Thermodynamic Constants ───────────────────────────────────────────────────
+
+ALPHA               = 0.08    # thermal diffusivity (how fast ideas spread through graph)
+AMBIENT_TEMPERATURE = 0.05    # heat death floor — nothing goes below this
+FUSION_THRESHOLD    = 1.60    # combined temp at which two adjacent concepts fuse
+FUSION_YIELD        = 0.55    # fraction of combined heat the new concept inherits
+FUSION_DRAIN        = 0.40    # how much heat is lost from parents after fusion
+FREEZE_TEMP         = 0.12    # below this = crystallization candidate
+FREEZE_DWELL        = 8       # pulses below freeze_temp before crystallization fires
+BOIL_THRESHOLD      = 2.50    # above this = concept is "boiling" — signal this to agent
+EMISSION_RATE       = 0.92    # passive cooling each tick (like radiation)
+MAX_EMISSIONS       = 12      # max fusion events per pulse (thermodynamic rate cap)
+
+
+# ── Core Data Structures ──────────────────────────────────────────────────────
+
+@dataclass
+class ConceptNode:
+    """
+    A single node in the thermorphic knowledge graph.
+    Temperature is the fundamental property — everything else is derived from it.
+    """
+    id:           str
+    content:      str
+    temperature:  float         = 0.5    # [0 → ∞), ambient = 0.05
+    state:        str           = "molten"  # molten | crystallizing | crystallized | boiling
+    tags:         List[str]     = field(default_factory=list)
+    edges:        List[str]     = field(default_factory=list)  # neighbor node IDs
+    cool_ticks:   int           = 0       # consecutive ticks below FREEZE_TEMP
+    born_from:    List[str]     = field(default_factory=list)  # parent IDs if fused
+    created_at:   float         = field(default_factory=time.time)
+    last_heated:  float         = field(default_factory=time.time)
+    access_count: int           = 0
+    immutable:    bool          = False   # True once crystallized
+
+    # Holographic vector (simplified: random unit vector in R^256)
+    # In production: proper HRR via numpy circular convolution
+    hvec:         List[float]   = field(default_factory=list)
+
+    def heat(self, delta: float, source: str = "external"):
+        """Inject heat into this concept. Boosts temperature and resets cool counter."""
+        if self.immutable:
+            return  # crystallized concepts don't absorb heat
+        self.temperature = min(self.temperature + delta, 10.0)
+        self.cool_ticks  = 0
+        self.last_heated = time.time()
+        self.access_count += 1
+        self._update_state()
+
+    def cool(self, rate: float = EMISSION_RATE):
+        """Passive radiation — lose heat each tick toward ambient."""
+        if self.immutable:
+            return
+        self.temperature = max(
+            AMBIENT_TEMPERATURE,
+            self.temperature * rate
+        )
+        if self.temperature < FREEZE_TEMP:
+            self.cool_ticks += 1
+        else:
+            self.cool_ticks = 0
+        self._update_state()
+
+    def _update_state(self):
+        if self.immutable:
+            self.state = "crystallized"
+        elif self.temperature >= BOIL_THRESHOLD:
+            self.state = "boiling"
+        elif self.cool_ticks >= FREEZE_DWELL:
+            self.state = "crystallizing"
+        elif self.temperature < FREEZE_TEMP:
+            self.state = "cold"
+        else:
+            self.state = "molten"
+
+    def to_dict(self) -> dict:
+        return {
+            "id":          self.id,
+            "content":     self.content[:80],
+            "temperature": round(self.temperature, 4),
+            "state":       self.state,
+            "tags":        self.tags,
+            "edges":       self.edges,
+            "cool_ticks":  self.cool_ticks,
+            "born_from":   self.born_from,
+            "access_count": self.access_count,
+            "immutable":   self.immutable,
+        }
+
+
+@dataclass
+class FusionEvent:
+    """Record of an emergent concept fusion."""
+    parent_a_id:    str
+    parent_b_id:    str
+    child_id:       str
+    child_content:  str
+    temp_at_fusion: float
+    pulse:          int
+    timestamp:      float = field(default_factory=time.time)
+
+
+# ── HRR Helper (Holographic Reduced Representation) ───────────────────────────
+
+def _random_hvec(dims: int = 256) -> List[float]:
+    """Generate a random unit hypervector."""
+    v    = [random.gauss(0, 1) for _ in range(dims)]
+    norm = math.sqrt(sum(x*x for x in v)) or 1.0
+    return [x / norm for x in v]
+
+def _hrr_bind(v1: List[float], v2: List[float]) -> List[float]:
+    """
+    Circular convolution binding — the core HRR operation.
+    Encodes the RELATIONSHIP between two concepts into a single vector.
+    The result is dissimilar to both parents (compressed joint representation).
+    """
+    n      = len(v1)
+    result = []
+    for k in range(n):
+        val = sum(v1[j] * v2[(k - j) % n] for j in range(n))
+        result.append(val / n)
+    # Normalize
+    norm = math.sqrt(sum(x*x for x in result)) or 1.0
+    return [x / norm for x in result]
+
+def _hrr_dot(v1: List[float], v2: List[float]) -> float:
+    """Cosine similarity between two hypervectors."""
+    return sum(a*b for a, b in zip(v1, v2))
+
+def _synthesize_content(a: ConceptNode, b: ConceptNode) -> str:
+    """
+    Generate the emergent concept label when A and B fuse.
+    In production: run through an LLM for true semantic synthesis.
+    Here: deterministic composite label.
+    """
+    a_words = a.content.split()[:3]
+    b_words = b.content.split()[-3:]
+    return f"[EMERGENT] {' '.join(a_words)} ⟷ {' '.join(b_words)}"
+
+
+# ── The Thermorphic Substrate ─────────────────────────────────────────────────
+
+class ThermorphicSubstrate:
+    """
+    The full thermorphic computing engine.
+
+    This is a knowledge graph where information has temperature.
+    Concepts flow, fuse, crystallize, and boil purely through
+    thermodynamic physics — no programmed rules for what to remember
+    or forget. The physics decides.
+    """
+
+    def __init__(self):
+        self.nodes:         Dict[str, ConceptNode] = {}
+        self.fusion_log:    List[FusionEvent]      = []
+        self.pulse_count:   int                    = 0
+        self.total_fusions: int                    = 0
+        self.total_crystals: int                   = 0
+        self._heat_injections: List[Tuple[str, float, str]] = []  # queued heat events
+
+    # ── PUBLIC API ─────────────────────────────────────────────────────────
+
+    def inject(
+        self,
+        content:     str,
+        temperature: float      = 0.8,
+        tags:        List[str]  = None,
+        edges_to:    List[str]  = None,
+        dims:        int        = 64,   # reduced dims for demo; use 256+ in production
+    ) -> ConceptNode:
+        """
+        Inject a new concept into the substrate at a given temperature.
+        Higher temperature = more "urgent" / salient / recently encountered.
+        """
+        node = ConceptNode(
+            id          = str(uuid.uuid4())[:8],
+            content     = content,
+            temperature = temperature,
+            tags        = tags or [],
+            edges       = edges_to or [],
+            hvec        = _random_hvec(dims),
+        )
+        self.nodes[node.id] = node
+
+        # Wire reciprocal edges
+        for target_id in (edges_to or []):
+            if target_id in self.nodes and node.id not in self.nodes[target_id].edges:
+                self.nodes[target_id].edges.append(node.id)
+
+        return node
+
+    def heat(self, node_id: str, delta: float, source: str = "access"):
+        """Externally heat a concept (e.g., agent just accessed it)."""
+        if node_id in self.nodes:
+            self.nodes[node_id].heat(delta, source)
+
+    def connect(self, id_a: str, id_b: str):
+        """Add a bidirectional thermal edge between two concepts."""
+        if id_a in self.nodes and id_b in self.nodes:
+            if id_b not in self.nodes[id_a].edges:
+                self.nodes[id_a].edges.append(id_b)
+            if id_a not in self.nodes[id_b].edges:
+                self.nodes[id_b].edges.append(id_a)
+
+    def pulse(self) -> dict:
+        """
+        Run one thermodynamic tick.
+        Four phases:
+          1. Diffusion    — heat flows from hot nodes to cool neighbors
+          2. Radiation    — all nodes lose heat passively
+          3. Fusion       — adjacent hot node pairs spawn emergent concepts
+          4. Crystallize  — sufficiently cold nodes lock into long-term memory
+        """
+        self.pulse_count += 1
+        events = {
+            "pulse":      self.pulse_count,
+            "diffusions": 0,
+            "fusions":    [],
+            "crystals":   [],
+            "boiling":    [],
+        }
+
+        # ── Phase 1: Thermal Diffusion ──────────────────────────────────
+        # Each hot node pushes heat to its cooler neighbors.
+        # Magnitude follows Fourier's law: q = α × (T_hot - T_cool)
+        heat_deltas: Dict[str, float] = defaultdict(float)
+
+        for node_id, node in self.nodes.items():
+            if node.immutable or not node.edges:
+                continue
+            for neighbor_id in node.edges:
+                if neighbor_id not in self.nodes:
+                    continue
+                neighbor = self.nodes[neighbor_id]
+                delta_t  = node.temperature - neighbor.temperature
+                if delta_t > 0 and not neighbor.immutable:
+                    flow_rate = ALPHA * delta_t
+                    heat_deltas[neighbor_id] += flow_rate * 0.5
+                    heat_deltas[node_id]     -= flow_rate * 0.5
+                    events["diffusions"]     += 1
+
+        for node_id, delta in heat_deltas.items():
+            if node_id in self.nodes:
+                new_temp = self.nodes[node_id].temperature + delta
+                self.nodes[node_id].temperature = max(AMBIENT_TEMPERATURE, new_temp)
+
+        # ── Phase 2: Passive Radiation ──────────────────────────────────
+        for node in self.nodes.values():
+            node.cool(EMISSION_RATE)
+            if node.state == "boiling":
+                events["boiling"].append(node.id)
+
+        # ── Phase 3: Semantic Fusion ────────────────────────────────────
+        # Find pairs of adjacent hot nodes that exceed the fusion threshold.
+        # Cap at MAX_EMISSIONS fusions per pulse (thermodynamic rate limit).
+        fusions_this_pulse = 0
+        checked_pairs = set()
+
+        for node_id, node in list(self.nodes.items()):
+            if fusions_this_pulse >= MAX_EMISSIONS:
+                break
+            if node.immutable or node.temperature < 0.5:
+                continue
+
+            for neighbor_id in node.edges:
+                if neighbor_id not in self.nodes:
+                    continue
+                pair_key = tuple(sorted([node_id, neighbor_id]))
+                if pair_key in checked_pairs:
+                    continue
+                checked_pairs.add(pair_key)
+
+                neighbor = self.nodes[neighbor_id]
+                if neighbor.immutable:
+                    continue
+
+                combined_temp = node.temperature + neighbor.temperature
+                if combined_temp >= FUSION_THRESHOLD:
+                    child = self._fuse(node, neighbor)
+                    event = FusionEvent(
+                        parent_a_id    = node_id,
+                        parent_b_id    = neighbor_id,
+                        child_id       = child.id,
+                        child_content  = child.content,
+                        temp_at_fusion = combined_temp,
+                        pulse          = self.pulse_count,
+                    )
+                    self.fusion_log.append(event)
+                    events["fusions"].append({
+                        "parents": [node_id, neighbor_id],
+                        "child":   child.id,
+                        "content": child.content,
+                        "temp":    round(combined_temp, 3),
+                    })
+                    fusions_this_pulse  += 1
+                    self.total_fusions  += 1
+
+        # ── Phase 4: Crystallization ────────────────────────────────────
+        for node_id, node in self.nodes.items():
+            if not node.immutable and node.cool_ticks >= FREEZE_DWELL:
+                node.immutable  = True
+                node.state      = "crystallized"
+                node.temperature = 0.0
+                self.total_crystals += 1
+                events["crystals"].append(node_id)
+
+        return events
+
+    def recall(self, query_content: str, top_k: int = 5) -> List[ConceptNode]:
+        """
+        Retrieve the most relevant concepts.
+        Relevance = thermal weight × semantic similarity.
+        Warmer concepts are more salient. Crystallized concepts are durable.
+        Accessing a node heats it (spreading activation via thermodynamics).
+        """
+        results = []
+        q_words = set(query_content.lower().split())
+
+        for node in self.nodes.values():
+            # Simple word-overlap similarity (replace with HRR dot product in production)
+            n_words  = set(node.content.lower().split())
+            overlap  = len(q_words & n_words) / max(len(q_words | n_words), 1)
+
+            # Thermal boost: hot concepts surface more readily
+            thermal_boost = node.temperature if not node.immutable else 0.3
+            score         = overlap * (1.0 + thermal_boost)
+
+            results.append((score, node))
+
+        results.sort(key=lambda x: x[0], reverse=True)
+        top    = [node for _, node in results[:top_k]]
+
+        # Accessing heats the recalled nodes (spreading activation)
+        for node in top:
+            if not node.immutable:
+                node.heat(0.15, source="recall")
+
+        return top
+
+    def snapshot(self) -> dict:
+        """Full substrate state for visualization / API."""
+        nodes_by_state = defaultdict(list)
+        for node in self.nodes.values():
+            nodes_by_state[node.state].append(node.to_dict())
+
+        temps = [n.temperature for n in self.nodes.values()]
+        return {
+            "pulse":          self.pulse_count,
+            "total_nodes":    len(self.nodes),
+            "total_fusions":  self.total_fusions,
+            "total_crystals": self.total_crystals,
+            "mean_temp":      round(sum(temps) / max(len(temps), 1), 4),
+            "max_temp":       round(max(temps, default=0), 4),
+            "nodes_by_state": {k: len(v) for k, v in nodes_by_state.items()},
+            "recent_fusions": [
+                {"child": f.child_content, "pulse": f.pulse}
+                for f in self.fusion_log[-5:]
+            ],
+            "nodes":          [n.to_dict() for n in self.nodes.values()],
+        }
+
+    # ── INTERNAL ───────────────────────────────────────────────────────────
+
+    def _fuse(self, a: ConceptNode, b: ConceptNode) -> ConceptNode:
+        """
+        Semantic Fusion: two hot adjacent concepts merge into a new emergent node.
+        The child inherits a holographic binding of both parents (HRR circular convolution).
+        Both parents lose heat — energy is conserved (approximately).
+        """
+        combined_temp = a.temperature + b.temperature
+        child_temp    = combined_temp * FUSION_YIELD
+
+        # Drain parents
+        a.temperature = max(AMBIENT_TEMPERATURE, a.temperature * FUSION_DRAIN)
+        b.temperature = max(AMBIENT_TEMPERATURE, b.temperature * FUSION_DRAIN)
+        a._update_state()
+        b._update_state()
+
+        # Generate emergent content
+        child_content = _synthesize_content(a, b)
+
+        # Holographic binding — child's vector encodes the A⊗B relationship
+        child_hvec = _hrr_bind(a.hvec, b.hvec) if a.hvec and b.hvec else _random_hvec(64)
+
+        child = ConceptNode(
+            id          = str(uuid.uuid4())[:8],
+            content     = child_content,
+            temperature = child_temp,
+            tags        = list(set(a.tags + b.tags + ["emergent", "fused"])),
+            edges       = [a.id, b.id],
+            born_from   = [a.id, b.id],
+            hvec        = child_hvec,
+        )
+        self.nodes[child.id] = child
+
+        # Wire parent edges back to child
+        a.edges.append(child.id)
+        b.edges.append(child.id)
+
+        return child
+
+
+# ── Demo / Runnable Simulation ────────────────────────────────────────────────
+
+def _bar(temp: float, width: int = 20) -> str:
+    filled = min(width, int(temp / 3.0 * width))
+    colors = {
+        "cold":         "░",
+        "crystallized": "█",
+        "boiling":      "🔥",
+    }
+    bar = "█" * filled + "░" * (width - filled)
+    return f"[{bar}] {temp:.3f}"
+
+def _state_icon(state: str) -> str:
+    return {
+        "molten":        "🌡 ",
+        "boiling":       "🔥",
+        "cold":          "❄ ",
+        "crystallizing": "🧊",
+        "crystallized":  "💎",
+    }.get(state, "?")
+
+
+def run_demo():
+    print("\n" + "═"*65)
+    print("  THERMORPHIC COMPUTING SUBSTRATE — Live Demo")
+    print("  'What if information had temperature?'")
+    print("═"*65 + "\n")
+
+    sub = ThermorphicSubstrate()
+
+    # Seed with a constellation of concepts from an AI coding session
+    concepts = [
+        ("asyncpg connection pooling",          1.8, ["python", "database"]),
+        ("FastAPI lifespan context manager",    1.4, ["python", "api"]),
+        ("PostgreSQL schema migration",         0.9, ["database", "sql"]),
+        ("Ebbinghaus forgetting curve",         1.2, ["memory", "cognition"]),
+        ("hormone cross-talk rules",            1.6, ["biology", "cognition"]),
+        ("circular convolution binding",        0.6, ["math", "encoding"]),
+        ("evolutionary fitness oracle",         1.1, ["evolution", "agent"]),
+        ("semantic diffusion gradient",         0.4, ["math", "graph"]),
+        ("circadian rhythm phase gate",         0.7, ["biology", "scheduling"]),
+        ("metacognition drift detection",       1.3, ["cognition", "agent"]),
+        ("interoception energy budget",         0.8, ["biology", "state"]),
+        ("quantum-inspired selection pressure", 0.5, ["evolution", "math"]),
+    ]
+
+    print("🌡  INJECTING CONCEPTS:")
+    nodes = []
+    for content, temp, tags in concepts:
+        n = sub.inject(content, temperature=temp, tags=tags)
+        nodes.append(n)
+        icon = _state_icon(n.state)
+        print(f"  {icon} [{n.id}] {content[:45]:<45} {_bar(temp, 16)}")
+
+    # Wire semantic edges (what's adjacent in idea-space)
+    edges = [
+        (0, 1),   # asyncpg ↔ FastAPI lifespan
+        (1, 2),   # lifespan ↔ schema migration
+        (3, 4),   # ebbinghaus ↔ hormone cross-talk (both cognition)
+        (4, 9),   # hormone ↔ metacognition drift
+        (5, 7),   # circular conv ↔ semantic diffusion (both math)
+        (6, 11),  # fitness oracle ↔ quantum selection (both evolution)
+        (8, 10),  # circadian ↔ interoception (both biology)
+        (9, 10),  # metacognition ↔ interoception (both internal state)
+        (3, 9),   # ebbinghaus ↔ metacognition
+        (6, 4),   # fitness ↔ hormone cross-talk
+    ]
+    for a, b in edges:
+        sub.connect(nodes[a].id, nodes[b].id)
+
+    print(f"\n  Wired {len(edges)} semantic edges\n")
+    print("═"*65)
+
+    # Run the thermodynamic simulation for 15 pulses
+    for tick in range(1, 16):
+        print(f"\n⚡ PULSE #{tick}")
+        events = sub.pulse()
+
+        # Randomly heat some nodes (simulating agent accessing concepts)
+        if tick % 3 == 0:
+            heated = random.choice(nodes)
+            heated.heat(0.8, source="agent_access")
+            print(f"  🤖 Agent accessed: [{heated.id}] {heated.content[:40]}")
+
+        if events["diffusions"] > 0:
+            print(f"  〰  {events['diffusions']} diffusion flows")
+
+        for fusion in events["fusions"]:
+            print(f"  💥 FUSION: [{fusion['parents'][0]}]+[{fusion['parents'][1]}] → [{fusion['child']}]")
+            print(f"        '{fusion['content']}'  T={fusion['temp']}")
+
+        for crystal_id in events["crystals"]:
+            node = sub.nodes[crystal_id]
+            print(f"  💎 CRYSTALLIZED: [{crystal_id}] '{node.content[:50]}'")
+
+        for boil_id in events["boiling"]:
+            node = sub.nodes[boil_id]
+            print(f"  🔥 BOILING: [{boil_id}] '{node.content[:40]}' T={node.temperature:.2f}")
+
+    # Final state report
+    snap = sub.snapshot()
+    print("\n" + "═"*65)
+    print("  FINAL THERMAL STATE")
+    print("═"*65)
+    print(f"  Total nodes:    {snap['total_nodes']} ({snap['total_nodes'] - len(concepts)} emergent)")
+    print(f"  Total fusions:  {snap['total_fusions']}")
+    print(f"  Crystallized:   {snap['total_crystals']}")
+    print(f"  Mean temp:      {snap['mean_temp']}")
+    print(f"  Peak temp:      {snap['max_temp']}")
+    print()
+
+    print("  NODE THERMAL MAP:")
+    all_nodes = sorted(sub.nodes.values(), key=lambda n: n.temperature, reverse=True)
+    for node in all_nodes:
+        icon = _state_icon(node.state)
+        born = " [EMERGENT]" if node.born_from else ""
+        print(f"  {icon} [{node.id}] {node.content[:42]:<42} {_bar(node.temperature, 14)}{born}")
+
+    # Recall demo
+    print("\n" + "═"*65)
+    print("  THERMAL RECALL: query='cognition memory agent'")
+    print("═"*65)
+    results = sub.recall("cognition memory agent", top_k=4)
+    for i, node in enumerate(results):
+        icon = _state_icon(node.state)
+        print(f"  #{i+1} {icon} [{node.id}] {node.content[:50]}")
+        print(f"       T={node.temperature:.3f}  state={node.state}  tags={node.tags[:3]}")
+
+    print("\n" + "═"*65)
+    print("  THE PHYSICS DECIDED WHAT TO REMEMBER.")
+    print("  No rules. No decay functions. Just heat.")
+    print("═"*65 + "\n")
+
+    return sub
+
+
+if __name__ == "__main__":
+    random.seed(42)
+    run_demo()

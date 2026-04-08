@@ -2,8 +2,11 @@
 Cortex Memory Engine — Living Mind
 Postgres-backed. No SQLite. Ever.
 
-Step 1: remember / recall / count / decay
-Everything else layers on top.
+Memory physics: thermorphic heat equation replaces Ebbinghaus decay.
+  recall()           → heats the substrate (spreading thermal activation)
+  thermorphic_tick() → runs one diffusion pulse; crystallized nodes
+                       are promoted to identity memories in PG
+  remember()         → injects new concepts into the substrate
 """
 
 import uuid
@@ -14,6 +17,8 @@ import asyncpg
 from dataclasses import dataclass, field
 from typing import Optional
 from datetime import datetime
+
+from cortex.thermorphic import substrate as _thermal_substrate, FREEZE_TEMP
 
 DATABASE_URL = "postgresql://user@/living_mind?host=/var/run/postgresql"
 
@@ -127,6 +132,18 @@ class Cortex:
             )
 
 
+        # ── Thermorphic injection ───────────────────────────────────────
+        # Seed new memory into the thermal substrate at salience ∝ importance
+        # Hot emotions get a thermal bonus matching the emotion boost table
+        thermal_temp = 0.3 + importance * 1.4   # maps [0,1] → [0.3, 1.7]
+        if emotion in ("fear", "surprise"):
+            thermal_temp = min(2.2, thermal_temp * 1.3)  # flashbulb heat spike
+        _thermal_substrate.inject(
+            content     = content[:120],
+            temperature = thermal_temp,
+            tags        = tags + [type, emotion],
+        )
+
         from cortex.priming import priming
         if linked_ids:
             from types import SimpleNamespace
@@ -190,6 +207,16 @@ class Cortex:
                     WHERE id = ANY($1::uuid[])
                 """, ids, now)
 
+        # ── Thermorphic activation ──────────────────────────────────────
+        # Every recalled memory heats the corresponding substrate node.
+        # Importance determines heat delta: high importance = stays hot longer.
+        for mem in memories:
+            # Find matching substrate node by content prefix
+            for node in _thermal_substrate.nodes.values():
+                if node.content[:60] == mem.content[:60]:
+                    delta = 0.1 + mem.importance * 0.4
+                    _thermal_substrate.heat(node.id, delta, source="recall")
+                    break
 
         from cortex.working_memory import working_memory
         from cortex.cognitive_biases import biases
@@ -198,7 +225,7 @@ class Cortex:
 
         directive = awakening.last_goal if awakening else ""
         memories = biases.apply_biases(memories, telemetry_broker.state, directive)
-        
+
         # 3.2. Spreading Activation (Priming - Cortex Paper Phase 4)
         memories = await self._apply_priming(memories)
 
@@ -266,41 +293,79 @@ class Cortex:
         return [self._row_to_memory(r) for r in rows]
 
     # ------------------------------------------------------------------
-    # DECAY — Ebbinghaus forgetting curves
-    # Protects flashbulb and identity memories
+    # THERMORPHIC TICK — replaces Ebbinghaus decay
+    # Runs one physics pulse on the thermal substrate.
+    # Crystallized nodes → promoted to identity memories in Postgres.
+    # ------------------------------------------------------------------
+    async def thermorphic_tick(self) -> dict:
+        """
+        One tick of the heat equation replaces the old Ebbinghaus decay.
+        The physics decides what to forget, what to remember, what to fuse.
+
+        Returns pulse event dict with fusions and crystal promotions.
+        """
+        events = _thermal_substrate.pulse()
+
+        # ── Promote crystallized nodes to PG identity memories ──────────
+        # A crystallized node has cooled to 0 temp — it's now permanent.
+        # Write it back to Postgres as an identity-tagged semantic memory.
+        promoted = 0
+        for node_id in events.get("crystals", []):
+            node = _thermal_substrate.nodes.get(node_id)
+            if not node:
+                continue
+            try:
+                # Upsert: if this exact content already exists, skip
+                async with self._pool.acquire() as conn:
+                    existing = await conn.fetchval(
+                        "SELECT id FROM memories WHERE content = $1 LIMIT 1",
+                        f"[CRYSTAL] {node.content[:200]}"
+                    )
+                    if not existing:
+                        await conn.execute("""
+                            INSERT INTO memories
+                                (id, content, type, tags, importance, created_at,
+                                 last_accessed, access_count, emotion, confidence,
+                                 context, source, linked_ids, metadata)
+                            VALUES
+                                (gen_random_uuid(), $1, 'semantic', $2,
+                                 0.90, $3, $3, $4, 'neutral', 0.95,
+                                 'thermorphic_crystallization', 'generated', '{}', $5)
+                        """,
+                            f"[CRYSTAL] {node.content[:200]}",
+                            list(set(node.tags + ["identity", "crystal", "thermorphic"])),
+                            time.time(),
+                            node.access_count,
+                            json.dumps({"thermal_node_id": node_id, "born_from": node.born_from})
+                        )
+                        promoted += 1
+            except Exception as e:
+                print(f"[CORTEX] Crystal promotion error: {e}")
+
+        # ── Boiling nodes → hormone signal ──────────────────────────────
+        # A boiling concept is so hot it demands attention.
+        # Inject norepinephrine (alertness) proportional to boil count.
+        if events.get("boiling"):
+            try:
+                from state.telemetry_broker import telemetry_broker
+                telemetry_broker.inject(
+                    "norepinephrine",
+                    +0.03 * len(events["boiling"]),
+                    source="thermorphic_boil"
+                )
+            except Exception:
+                pass
+
+        events["promoted_to_identity"] = promoted
+        return events
+
+    # ------------------------------------------------------------------
+    # DECAY — kept for API compatibility, now delegates to thermorphic
     # ------------------------------------------------------------------
     async def decay(self) -> int:
-        now = time.time()
-        pruned = 0
-
-        async with self._pool.acquire() as conn:
-            rows = await conn.fetch("""
-                SELECT id, importance, access_count, last_accessed,
-                       is_flashbulb, is_identity
-                FROM memories
-                WHERE is_flashbulb = FALSE AND is_identity = FALSE
-            """)
-
-            for row in rows:
-                # S = S_base * (1+n)^1.5 * (1+I*2.0)
-                n = row["access_count"]
-                I = row["importance"]
-                S = EBBINGHAUS_BASE_STABILITY * ((1 + n) ** 1.5) * (1 + I * 2.0)
-                t = now - row["last_accessed"]
-                import math
-                retention = math.exp(-t / S)
-                new_importance = row["importance"] * retention
-
-                if new_importance < 0.05:
-                    await conn.execute("DELETE FROM memories WHERE id = $1", row["id"])
-                    pruned += 1
-                else:
-                    await conn.execute(
-                        "UPDATE memories SET importance = $1 WHERE id = $2",
-                        new_importance, row["id"]
-                    )
-
-        return pruned
+        """Legacy entry point. Now runs thermorphic_tick() instead of Ebbinghaus."""
+        events = await self.thermorphic_tick()
+        return events.get("promoted_to_identity", 0)
 
     # ------------------------------------------------------------------
     # CONSOLIDATE — episodic → semantic (72h+ old, high access)

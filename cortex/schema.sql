@@ -294,3 +294,37 @@ CREATE TABLE IF NOT EXISTS lineage_snapshots (
 );
 
 CREATE INDEX IF NOT EXISTS lineage_snapshots_accepted_idx ON lineage_snapshots (accepted_at DESC);
+
+
+-- ============================================================
+-- THERMAL_FUSIONS — Emergent concept log (Thermorphic substrate)
+-- Every semantic fusion spawned by the heat equation is recorded here.
+-- The organism's invention history.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS thermal_fusions (
+    id              BIGSERIAL PRIMARY KEY,
+    parent_a_id     TEXT NOT NULL,          -- thermorphic node ID (short hash)
+    parent_b_id     TEXT NOT NULL,
+    child_id        TEXT NOT NULL,
+    parent_a_content TEXT NOT NULL DEFAULT '',
+    parent_b_content TEXT NOT NULL DEFAULT '',
+    child_content   TEXT NOT NULL,
+    temp_at_fusion  REAL NOT NULL DEFAULT 0.0,
+    memory_id       UUID REFERENCES memories(id) ON DELETE SET NULL,  -- if written to PG
+    alpha           REAL NOT NULL DEFAULT 0.08,   -- α at time of fusion (evolver gene)
+    pulse           BIGINT NOT NULL DEFAULT 0,    -- cortex pulse count at fusion
+    created_at      DOUBLE PRECISION NOT NULL DEFAULT extract(epoch from now())
+);
+
+CREATE INDEX IF NOT EXISTS thermal_fusions_created_idx  ON thermal_fusions (created_at DESC);
+CREATE INDEX IF NOT EXISTS thermal_fusions_child_idx    ON thermal_fusions (child_id);
+CREATE INDEX IF NOT EXISTS thermal_fusions_pulse_idx    ON thermal_fusions (pulse DESC);
+
+-- Tag crystallized memories with their thermal origin node
+DO $$ BEGIN
+    ALTER TABLE memories ADD COLUMN thermal_node_id TEXT;
+EXCEPTION WHEN duplicate_column THEN NULL; END $$;
+
+CREATE INDEX IF NOT EXISTS memories_thermal_node_idx
+    ON memories (thermal_node_id)
+    WHERE thermal_node_id IS NOT NULL;

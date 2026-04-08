@@ -31,6 +31,7 @@ MIN_MEMORIES  = 10     # minimum memories needed to dream
 TIMEOUT       = 25     # seconds
 MAX_DREAMS    = 3      # max dreams per cycle
 AGENT_REPLAY_TAG_PREFIX = "session:"  # tag prefix for agent session memories
+THERMAL_OVERNIGHT_PULSES = 20  # diffusion pulses to run per dream cycle
 
 
 class DreamsEngine:
@@ -146,10 +147,12 @@ class DreamsEngine:
     # ------------------------------------------------------------------
     def _pick_strategies(self, phase: str) -> list[str]:
         if phase == "night":
-            # Night = deep consolidation. Agent session replay is highest priority.
-            return ["agent_session_replay", "mutation_replay", "gene_affinity", "toxic_avoidance"]
+            # Night = deep consolidation.
+            # thermorphic_diffusion runs first — physics reshapes the memory field
+            # before the LLM-based strategies run on the resulting topology.
+            return ["thermorphic_diffusion", "agent_session_replay", "mutation_replay", "gene_affinity", "toxic_avoidance"]
         elif phase == "evening":
-            return ["agent_session_replay", "gene_affinity", "toxic_avoidance", "niche_fill"]
+            return ["thermorphic_diffusion", "agent_session_replay", "gene_affinity", "toxic_avoidance", "niche_fill"]
         elif phase == "dawn":
             return ["niche_fill", "gene_affinity"]
         else:  # day
@@ -159,7 +162,9 @@ class DreamsEngine:
     # STRATEGY RUNNERS
     # ------------------------------------------------------------------
     async def _run_strategy(self, strategy: str, pulse: int, cortex) -> dict | None:
-        if strategy == "agent_session_replay":
+        if strategy == "thermorphic_diffusion":
+            return await self._thermorphic_diffusion(pulse, cortex)
+        elif strategy == "agent_session_replay":
             return await self._agent_session_replay(pulse, cortex)
         elif strategy == "gene_affinity":
             return await self._gene_affinity(pulse, cortex)
@@ -170,6 +175,74 @@ class DreamsEngine:
         elif strategy == "toxic_avoidance":
             return await self._toxic_avoidance(pulse, cortex)
         return None
+
+    async def _thermorphic_diffusion(self, pulse: int, cortex) -> dict | None:
+        """
+        Overnight thermal diffusion strategy.
+
+        Runs THERMAL_OVERNIGHT_PULSES ticks of the thermorphic heat equation
+        while the cortex is in dream state (no external heat injections).
+        This allows the thermal field to equilibrate — hot concepts diffuse
+        into neighbors, cold concepts crystallize into permanent memory,
+        and adjacent hot pairs undergo semantic fusion generating new nodes.
+
+        Each fusion event is written back to Postgres as a new semantic memory.
+        Crystal events are promoted to identity memories by thermorphic_tick().
+        """
+        from cortex.thermorphic import substrate as _sub
+        import cortex.thermorphic as _thermo_mod
+
+        ts = datetime.now().strftime("%H:%M:%S")
+        print(f"[{ts}] [DREAMS] 🔥 Thermorphic diffusion: {THERMAL_OVERNIGHT_PULSES} pulses "
+              f"| nodes={len(_sub.nodes)} α={_thermo_mod.ALPHA:.3f}")
+
+        total_fusions   = 0
+        total_crystals  = 0
+        emerged_concepts = []
+
+        for _ in range(THERMAL_OVERNIGHT_PULSES):
+            events = await cortex.thermorphic_tick()
+            total_fusions  += len(events.get("fusions", []))
+            total_crystals += len(events.get("crystals", []))
+
+            # Write fusion-born concepts as memories immediately
+            for fusion in events.get("fusions", []):
+                child_node = _sub.nodes.get(fusion["child"])
+                if child_node and child_node.content not in emerged_concepts:
+                    emerged_concepts.append(child_node.content)
+                    try:
+                        await cortex.remember(
+                            content    = f"[THERMAL FUSION] {child_node.content}",
+                            type       = "semantic",
+                            tags       = child_node.tags + ["thermorphic", "emerged", "dream"],
+                            importance = min(0.9, child_node.temperature * 0.5),
+                            emotion    = "curiosity",
+                            source     = "generated",
+                            context    = f"pulse={pulse} fusion_temp={fusion['temp']}",
+                        )
+                    except Exception:
+                        pass
+
+        snap = _sub.snapshot()
+        print(f"[{ts}] [DREAMS] 🔥 Thermal diffusion complete: "
+              f"{total_fusions} fusions / {total_crystals} crystals / "
+              f"{len(emerged_concepts)} emerged / mean_T={snap['mean_temp']}")
+
+        if not emerged_concepts and total_fusions == 0:
+            return None
+
+        return {
+            "strategy":   "thermorphic_diffusion",
+            "hypothesis": (
+                f"Overnight thermal diffusion: {total_fusions} concept fusions, "
+                f"{total_crystals} crystallizations, {len(emerged_concepts)} emergent nodes. "
+                f"Mean field temperature: {snap['mean_temp']}. "
+                + (f"New emergent concepts: {', '.join(emerged_concepts[:3])}" if emerged_concepts else "")
+            ),
+            "pattern":    f"thermal_pulse_x{THERMAL_OVERNIGHT_PULSES}",
+            "confidence": min(0.95, 0.5 + total_fusions * 0.05),
+            "emotion":    "curiosity",
+        }
 
     async def _agent_session_replay(self, pulse: int, cortex) -> dict | None:
         """

@@ -57,13 +57,22 @@ class HormoneGene:
 
 
 @dataclass
+class ThermorphicGene:
+    """Evolvable thermorphic physics constants."""
+    alpha:            float = 0.08    # thermal diffusivity — how fast ideas spread
+    fusion_threshold: float = 1.60   # combined temp to trigger concept fusion
+    freeze_dwell:     int   = 8      # ticks below freeze before crystallization
+
+
+@dataclass
 class Genome:
     """The organism's mutable blueprint."""
-    phase_config:   Dict[str, Any]         # phase_name → fire_every_N_pulses
-    hormone_genes:  Dict[str, HormoneGene] # hormone_name → gene
-    generation:     int = 0
-    fitness:        float = 0.0
-    notes:          str = ""
+    phase_config:      Dict[str, Any]         # phase_name → fire_every_N_pulses
+    hormone_genes:     Dict[str, HormoneGene] # hormone_name → gene
+    thermal_gene:      ThermorphicGene        # thermorphic physics constants
+    generation:        int = 0
+    fitness:           float = 0.0
+    notes:             str = ""
 
 
 class Evolver:
@@ -171,6 +180,11 @@ class Evolver:
         return Genome(
             phase_config  = phase_config,
             hormone_genes = hormone_genes,
+            thermal_gene  = ThermorphicGene(
+                alpha            = getattr(__import__("cortex.thermorphic", fromlist=["ALPHA"]), "ALPHA", 0.08),
+                fusion_threshold = getattr(__import__("cortex.thermorphic", fromlist=["FUSION_THRESHOLD"]), "FUSION_THRESHOLD", 1.60),
+                freeze_dwell     = getattr(__import__("cortex.thermorphic", fromlist=["FREEZE_DWELL"]), "FREEZE_DWELL", 8),
+            ),
             generation    = 0,
             fitness       = 0.0,
             notes         = "Initial genome",
@@ -186,6 +200,7 @@ class Evolver:
             self._mutate_hormone_baselines,
             self._mutate_hormone_decay_rates,
             self._insert_micro_phase,
+            self._mutate_thermal_gene,    # NEW: thermorphic physics mutation
         ]
 
         for i in range(count):
@@ -237,12 +252,36 @@ class Evolver:
             "interoception_feedback": 8,
             "context_refresh":        12,
             "counterfactual_replay":  15,
+            "thermorphic_pulse":      10,   # NEW: nightly thermal diffusion phase
         }
         for phase_name, default_freq in candidates.items():
             if phase_name not in genome.phase_config:
                 genome.phase_config[phase_name] = default_freq
                 return f"micro_phase:{phase_name}"
         return ""
+
+    def _mutate_thermal_gene(self, genome: Genome) -> str:
+        """
+        Mutate one of the three thermorphic physics constants.
+        Small nudges — the physics is sensitive to large changes.
+        """
+        field = random.choice(["alpha", "fusion_threshold", "freeze_dwell"])
+        gene  = genome.thermal_gene
+
+        if field == "alpha":
+            delta = round(random.uniform(-0.01, 0.01), 4)
+            gene.alpha = max(0.01, min(0.30, gene.alpha + delta))
+            return f"thermal.alpha:{delta:+.4f}"
+
+        elif field == "fusion_threshold":
+            delta = round(random.uniform(-0.1, 0.1), 3)
+            gene.fusion_threshold = max(0.8, min(3.5, gene.fusion_threshold + delta))
+            return f"thermal.fusion_threshold:{delta:+.3f}"
+
+        else:  # freeze_dwell
+            delta = random.choice([-1, 1])
+            gene.freeze_dwell = max(3, min(30, gene.freeze_dwell + delta))
+            return f"thermal.freeze_dwell:{delta:+d}"
 
     # ------------------------------------------------------------------
     # SHADOW TEST — lightweight fitness estimation for a variant
@@ -384,8 +423,9 @@ class Evolver:
     # APPLY GENOME — patches live runtime
     # ------------------------------------------------------------------
     def _apply_genome(self, genome: Genome, telemetry_broker):
-        """Apply the winning genome to the live runtime and hormone bus."""
+        """Apply the winning genome to the live runtime, hormone bus, and thermorphic substrate."""
         from state.telemetry_broker import BASELINES, DECAY_RATES
+        import cortex.thermorphic as _thermo_mod
 
         # Update phase_config on runtime
         if hasattr(self._runtime, "phase_config"):
@@ -397,9 +437,19 @@ class Evolver:
                 BASELINES[name]    = round(gene.baseline, 4)
                 DECAY_RATES[name]  = round(gene.decay_rate, 4)
 
+        # ── Apply thermorphic gene to live substrate constants ──────────
+        # The substrate reads these module-level constants every pulse.
+        _thermo_mod.ALPHA             = round(genome.thermal_gene.alpha, 4)
+        _thermo_mod.FUSION_THRESHOLD  = round(genome.thermal_gene.fusion_threshold, 3)
+        _thermo_mod.FREEZE_DWELL      = int(genome.thermal_gene.freeze_dwell)
+
         self._current_genome = genome
         ts = datetime.now().strftime("%H:%M:%S")
-        print(f"[{ts}] [EVOLVER] 🔄 Live genome updated — generation {genome.generation}")
+        print(
+            f"[{ts}] [EVOLVER] 🔄 Live genome updated — generation {genome.generation} "
+            f"| thermal: α={_thermo_mod.ALPHA} fusion={_thermo_mod.FUSION_THRESHOLD} "
+            f"freeze_dwell={_thermo_mod.FREEZE_DWELL}"
+        )
 
     # ------------------------------------------------------------------
     # LINEAGE CHECKPOINT
