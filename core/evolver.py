@@ -370,7 +370,9 @@ class Evolver:
                     self._generation,
                 )
         except Exception as e:
-            pass  # DB unavailable -- non-fatal
+            # Non-fatal but consequential: a recurring failure means the entire
+            # shadow-test audit trail is being silently dropped.
+            print(f"[EVOLVER] ⚠️  causal_trace write failed: {type(e).__name__}: {e}")
 
         return treatment_fitness
 
@@ -403,7 +405,11 @@ class Evolver:
             avg_rating   = float(avg_rating or 0.5)
             success_rate = float(successes) / max(1, float(total))
 
-        except Exception:
+        except Exception as db_err:
+            # Log instead of silently defaulting — a DB outage here means every
+            # nightly fitness score silently returns 0.78 forever, masking the failure.
+            print(f"[EVOLVER] ⚠️  Fitness DB query failed: {type(db_err).__name__}: {db_err} "
+                  f"— defaulting avg_rating=0.5, success_rate=0.5")
             avg_rating   = 0.5
             success_rate = 0.5
 
@@ -415,8 +421,10 @@ class Evolver:
         try:
             from state.interoception import interoception
             energy = interoception.state.energy_budget
-        except Exception:
-            pass
+        except ImportError:
+            pass  # interoception not installed in this deployment
+        except Exception as e:
+            print(f"[EVOLVER] ⚠️  Interoception energy read failed: {type(e).__name__}: {e}")
 
         fitness = (
             0.4 * avg_rating +
@@ -449,8 +457,14 @@ class Evolver:
                     if match:
                         val = float(match.group())
                         return min(1.0, max(0.0, val if val <= 1.0 else val / 10.0))
-        except Exception:
-            pass
+        except aiohttp.ClientConnectorError:
+            pass  # Ollama offline — expected operational state
+        except aiohttp.ServerTimeoutError:
+            print(f"[EVOLVER] Auditor timeout (>{8}s) — defaulting coherence=0.5")
+        except aiohttp.ClientError as e:
+            print(f"[EVOLVER] Auditor transient error: {type(e).__name__}: {e}")
+        except Exception as e:
+            print(f"[EVOLVER] Auditor unexpected error: {type(e).__name__}: {e}")
         return 0.5
 
     # ------------------------------------------------------------------
@@ -479,25 +493,31 @@ class Evolver:
     # APPLY GENOME — patches live runtime
     # ------------------------------------------------------------------
     def _apply_genome(self, genome: Genome, telemetry_broker):
-        """Apply the winning genome to the live runtime, hormone bus, and thermorphic substrate."""
-        from state.telemetry_broker import BASELINES, DECAY_RATES
+        """Apply the winning genome to the live runtime, state_engine, and thermorphic substrate."""
         import cortex.thermorphic as _thermo_mod
 
-        # Update phase_config on runtime
+        # ── MetacognitionGenome → runtime phase_config ───────────────────────
         if hasattr(self._runtime, "phase_config"):
-            self._runtime.phase_config.update(genome.phase_config)
+            self._runtime.phase_config.update(genome.metacognition.phase_config)
 
-        # Update hormone baselines and decay rates
-        for name, gene in genome.hormone_genes.items():
-            if name in BASELINES:
-                BASELINES[name]    = round(gene.baseline, 4)
-                DECAY_RATES[name]  = round(gene.decay_rate, 4)
+        # ── DiffusionGenome.state_genes → state_engine DECAY + REGULATOR_BASELINES ──
+        # Don't touch telemetry_broker BASELINES/DECAY_RATES — those are the old
+        # hormone bus schema which no longer exists. StateEngine owns decay now.
+        try:
+            from cortex.state_engine import DECAY, REGULATOR_BASELINES
+            for name, gene in genome.diffusion.state_genes.items():
+                if name in DECAY:
+                    DECAY[name] = round(gene.decay_rate, 4)
+                if name in REGULATOR_BASELINES:
+                    REGULATOR_BASELINES[name] = round(gene.baseline, 4)
+        except Exception as se_err:
+            print(f"[EVOLVER] ⚠️  State engine gene apply failed: {type(se_err).__name__}: {se_err}")
 
-        # ── Apply thermorphic gene to live substrate constants ──────────
-        # The substrate reads these module-level constants every pulse.
-        _thermo_mod.ALPHA             = round(genome.thermal_gene.alpha, 4)
-        _thermo_mod.FUSION_THRESHOLD  = round(genome.thermal_gene.fusion_threshold, 3)
-        _thermo_mod.FREEZE_DWELL      = int(genome.thermal_gene.freeze_dwell)
+        # ── RetrievalGenome.thermal → thermorphic module constants ────────────
+        tg = genome.retrieval.thermal
+        _thermo_mod.ALPHA             = round(tg.alpha, 4)
+        _thermo_mod.FUSION_THRESHOLD  = round(tg.fusion_threshold, 3)
+        _thermo_mod.FREEZE_DWELL      = int(tg.freeze_dwell)
 
         self._current_genome = genome
         ts = datetime.now().strftime("%H:%M:%S")
