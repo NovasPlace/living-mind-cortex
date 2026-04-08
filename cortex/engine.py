@@ -247,17 +247,16 @@ class Cortex:
                 for row in rows:
                     memories.append(self._row_to_memory(row))
 
-
-            # Batch reconsolidation: single UPDATE for all recalled rows
-            if rows:
-                ids = [row["id"] for row in rows]
-                await conn.execute("""
-                    UPDATE memories
-                    SET last_accessed = $2,
-                        access_count  = access_count + 1,
-                        confidence    = GREATEST(0.1, confidence * 0.95)
-                    WHERE id = ANY($1::uuid[])
-                """, ids, now)
+                # Batch reconsolidation: single UPDATE for all recalled rows
+                if rows:
+                    ids = [row["id"] for row in rows]
+                    await conn.execute("""
+                        UPDATE memories
+                        SET last_accessed = $2,
+                            access_count  = access_count + 1,
+                            confidence    = GREATEST(0.1, confidence * 0.95)
+                        WHERE id = ANY($1::uuid[])
+                    """, ids, now)
 
         # ── Thermorphic activation ──────────────────────────────────────
         # Every recalled memory heats the corresponding substrate node.
@@ -283,6 +282,60 @@ class Cortex:
 
         working_memory.add_many(memories)
         return memories
+
+    async def find_resonating_nodes(self, wave_vector: np.ndarray, threshold: float = 0.75) -> list:
+        """
+        Two-Stage Resonance Sweep:
+        1. Active-State Empathy (O(N_hot) RAM sweep)
+        2. Subconscious Dredging (Batched PostgreSQL bytea sweep)
+        """
+        resonating_node_ids = []
+
+        # ==========================================
+        # STAGE 1: Active-State Empathy (RAM)
+        # ==========================================
+        import logging
+        logger = logging.getLogger("HTP")
+        logger.info("Stage 1: Sweeping active hot pool...")
+        hot_nodes = _thermal_substrate.hsm.active_hot_nodes
+        for node_id, node in hot_nodes.items():
+            if node.hvec is not None:
+                sim = float(np.mean(np.cos(wave_vector - node.hvec)))
+                if sim >= threshold:
+                    resonating_node_ids.append(node_id)
+
+        if resonating_node_ids:
+            logger.info(f"Active resonance achieved. Aligned with {len(resonating_node_ids)} hot nodes.")
+            return resonating_node_ids
+
+        # ==========================================
+        # STAGE 2: Subconscious Dredging (PostgreSQL)
+        # ==========================================
+        logger.info("No active resonance. Initiating subconscious dredge...")
+        query = """
+            SELECT id, embedding 
+            FROM memories 
+            WHERE importance < 0.5 AND embedding IS NOT NULL
+            ORDER BY last_accessed DESC 
+            LIMIT 500;
+        """
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(query)
+            
+            for row in rows:
+                if row['embedding']:
+                    cold_hvec = np.frombuffer(row['embedding'], dtype=np.float32)
+                    if cold_hvec.shape[0] == wave_vector.shape[0]:
+                        sim = float(np.mean(np.cos(wave_vector - cold_hvec)))
+                        if sim >= threshold:
+                            resonating_node_ids.append(str(row['id']))
+
+        if resonating_node_ids:
+            logger.info(f"Subconscious resonance achieved. Dredged {len(resonating_node_ids)} cold nodes.")
+        else:
+            logger.info("Total resonance failure. Triggering structural confusion state.")
+
+        return resonating_node_ids
 
     async def _apply_priming(self, primary_memories: list[Memory]) -> list[Memory]:
         """

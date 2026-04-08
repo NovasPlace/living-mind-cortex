@@ -30,6 +30,31 @@ class HolographicSuperposition:
         decoded_complex = self.complex_holo * np.conj(probe)
         decoded_phase = np.angle(decoded_complex) % _TWO_PI
         return decoded_phase
+
+    def bind_to_anchor(self, semantic_hvec: np.ndarray, context_anchor: np.ndarray) -> np.ndarray:
+        """Binds a semantic vector to a transmission anchor."""
+        return (semantic_hvec + context_anchor) % _TWO_PI
+
+    def unbind_from_phase(self, hologram_phase: np.ndarray, context_anchor: np.ndarray) -> np.ndarray:
+        """Unbinds a raw external hologram phase from its anchor."""
+        holo_c = np.exp(1j * hologram_phase)
+        anchor_c = np.exp(1j * context_anchor)
+        decoded_complex = holo_c * np.conj(anchor_c)
+        return np.angle(decoded_complex) % _TWO_PI
+
+    def superpose_to_phase(self, traces: list[np.ndarray]) -> np.ndarray:
+        """
+        Pure function for network transmission. 
+        Returns the net angle vector without mutating internal local state.
+        """
+        if not traces:
+            return np.zeros(self.dims)
+            
+        stacked = np.array(traces)
+        x_sum = np.sum(np.cos(stacked), axis=0)
+        y_sum = np.sum(np.sin(stacked), axis=0)
+        
+        return np.arctan2(y_sum, x_sum) % _TWO_PI
         
     def update(self, hot_nodes: Dict[str, Any]):
         """

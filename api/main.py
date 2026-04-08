@@ -24,19 +24,79 @@ heartbeat = SovereignHeartbeat(
     idle_threshold_seconds=3600,
 )
 
+import json
+from aiortc import RTCSessionDescription
+from cortex.htp import HolographicTransferProtocol
+
+# Initialize the HTP Singleton
+htp_listener = HolographicTransferProtocol(cortex_engine=cortex, hsm=_thermal_substrate.hsm)
+
+async def signaling_listener():
+    """
+    Subscribes to PostgreSQL pub/sub for incoming SDP offers.
+    This is the out-of-band 'knock' that establishes the UDP wave channel.
+    """
+    try:
+        async with cortex._pool.acquire() as connection:
+            async def on_offer(conn, pid, channel, payload):
+                print(f"[HTP Listener] SDP Offer received. Opening peer connection...")
+                data = json.loads(payload)
+                offer = RTCSessionDescription(sdp=data["sdp"], type=data["type"])
+                
+                # Apply remote description and create answer
+                await htp_listener.pc.setRemoteDescription(offer)
+                answer = await htp_listener.pc.createAnswer()
+                await htp_listener.pc.setLocalDescription(answer)
+                
+                # Transmit the answer back via a NOTIFY broadcast
+                answer_payload = json.dumps({"sdp": answer.sdp, "type": answer.type})
+                # Using a secondary connection for NOTIFY to avoid blocking the listener state
+                async with cortex._pool.acquire() as ans_conn:
+                    await ans_conn.execute("SELECT pg_notify('htp_answers', $1)", answer_payload)
+                
+                # Setup the datachannel listener
+                await htp_listener.setup_channel(is_offerer=False)
+
+            # Start listening on the 'htp_offers' channel
+            await connection.add_listener('htp_offers', on_offer)
+            print("[HTP] Node bound to htp_offers signaling channel.")
+            try:
+                while True:
+                    await asyncio.sleep(3600)
+            finally:
+                await connection.remove_listener('htp_offers', on_offer)
+                
+    except asyncio.CancelledError:
+        print("[HTP Listener] Signaling hook detached.")
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await runtime.birth()
+    
     # Ignite the autonomic nervous system — runs alongside the runtime pulse
     pulse_task = asyncio.create_task(heartbeat.start())
+    
+    # Ignite the HTP Listener
+    signaling_task = asyncio.create_task(signaling_listener())
+    print("[Sovereign] Autonomic Nervous System & HTP Listener ONLINE.")
+    
     yield
+    
     # Clean shutdown
+    print("[Sovereign] Initiating graceful shutdown...")
     pulse_task.cancel()
-    try:
-        await pulse_task
-    except asyncio.CancelledError:
-        pass
+    signaling_task.cancel()
+    
+    # Explicitly close the WebRTC peer connection to prevent port hanging
+    if htp_listener.pc:
+        await htp_listener.pc.close()
+        
+    await asyncio.gather(pulse_task, signaling_task, return_exceptions=True)
     await runtime.death()
+    print("[Sovereign] Cortex safely hibernated.")
 
 app = FastAPI(
     title="Living Mind",
@@ -105,6 +165,7 @@ async def recall(
             "tags":        m.tags,
             "is_identity": m.is_identity,
             "is_flashbulb": m.is_flashbulb,
+            "metadata": m.metadata,
         }
         for m in memories
     ]
@@ -200,7 +261,8 @@ async def inject_agent_trace(payload: TracePayload, background_tasks: Background
         tags=["agent_trace", payload.source, payload.type],
         emotion="neutral",
         source="experienced", # DB Constraint: experienced|told|generated|inferred
-        context=str(payload.metadata)
+        context=str(payload.metadata),
+        metadata=payload.metadata
     )
     return {"status": "ingested"}
 

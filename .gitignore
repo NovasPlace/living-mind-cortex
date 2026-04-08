@@ -19,3 +19,4 @@ active_session.json
 # Personal / local config
 .env
 *.env
+outputs/
