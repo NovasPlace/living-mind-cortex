@@ -25,6 +25,16 @@ import aiohttp
 import httpx
 from datetime import datetime
 
+# Thermorphic imports live at module level so an ImportError is loud and immediate
+# rather than silently swallowed inside a running dream cycle.
+try:
+    from cortex.thermorphic import substrate as _thermo_substrate
+    import cortex.thermorphic as _thermo_mod
+    _THERMO_AVAILABLE = True
+except ImportError as _e:
+    _THERMO_AVAILABLE = False
+    print(f"[DREAMS] WARNING: thermorphic module unavailable — diffusion strategy disabled: {_e}")
+
 OLLAMA_URL    = "http://localhost:11434/api/generate"
 MODEL         = "gemma4-auditor"
 MIN_MEMORIES  = 10     # minimum memories needed to dream
@@ -189,16 +199,18 @@ class DreamsEngine:
         Each fusion event is written back to Postgres as a new semantic memory.
         Crystal events are promoted to identity memories by thermorphic_tick().
         """
-        from cortex.thermorphic import substrate as _sub
-        import cortex.thermorphic as _thermo_mod
+        if not _THERMO_AVAILABLE:
+            print("[DREAMS] Thermorphic diffusion skipped — module not available.")
+            return None
 
         ts = datetime.now().strftime("%H:%M:%S")
         print(f"[{ts}] [DREAMS] 🔥 Thermorphic diffusion: {THERMAL_OVERNIGHT_PULSES} pulses "
-              f"| nodes={len(_sub.nodes)} α={_thermo_mod.ALPHA:.3f}")
+              f"| nodes={len(_thermo_substrate.nodes)} α={_thermo_mod.ALPHA:.3f}")
 
-        total_fusions   = 0
-        total_crystals  = 0
+        total_fusions    = 0
+        total_crystals   = 0
         emerged_concepts = []
+        write_failures   = 0  # track silent failures — non-zero means Postgres had issues
 
         for _ in range(THERMAL_OVERNIGHT_PULSES):
             events = await cortex.thermorphic_tick()
@@ -207,7 +219,7 @@ class DreamsEngine:
 
             # Write fusion-born concepts as memories immediately
             for fusion in events.get("fusions", []):
-                child_node = _sub.nodes.get(fusion["child"])
+                child_node = _thermo_substrate.nodes.get(fusion["child"])
                 if child_node and child_node.content not in emerged_concepts:
                     emerged_concepts.append(child_node.content)
                     try:
@@ -220,10 +232,15 @@ class DreamsEngine:
                             source     = "generated",
                             context    = f"pulse={pulse} fusion_temp={fusion['temp']}",
                         )
-                    except Exception:
-                        pass
+                    except Exception as write_err:
+                        write_failures += 1
+                        print(f"[DREAMS] ⚠️  Fusion write failed (node={child_node.content[:40]!r}): "
+                              f"{type(write_err).__name__}: {write_err}")
 
-        snap = _sub.snapshot()
+        snap = _thermo_substrate.snapshot()
+        if write_failures:
+            print(f"[DREAMS] ⚠️  {write_failures}/{len(emerged_concepts)} fusion writes failed — "
+                  f"check Postgres connection / schema.")
         print(f"[{ts}] [DREAMS] 🔥 Thermal diffusion complete: "
               f"{total_fusions} fusions / {total_crystals} crystals / "
               f"{len(emerged_concepts)} emerged / mean_T={snap['mean_temp']}")
@@ -284,8 +301,11 @@ class DreamsEngine:
                       AND access_count < 2
                       AND created_at > $1
                 """, cutoff)
-        except Exception:
-            pass
+        except Exception as prune_err:
+            # Non-fatal: the replay can still run on the already-fetched rows.
+            # But log it — a recurring failure here signals a schema drift or lock issue.
+            print(f"[DREAMS] ⚠️  Agent session prune failed: "
+                  f"{type(prune_err).__name__}: {prune_err}")
 
         # Extract strong traces for schema-ization
         strong = [r for r in rows if r["importance"] > 0.7]
@@ -436,30 +456,52 @@ class DreamsEngine:
                 timeout=aiohttp.ClientTimeout(total=TIMEOUT),
             ) as resp:
                 if resp.status != 200:
+                    print(f"[DREAMS] LLM non-200 ({strategy}): HTTP {resp.status}")
                     return None
                 data = await resp.json()
                 raw  = data.get("response", "").strip()
 
-            return self._parse_dream(raw, strategy, emotion)
-        except Exception as e:
-            print(f"[DREAMS] LLM error ({strategy}): {e}")
+        except aiohttp.ClientConnectorError as e:
+            # Ollama is not running — expected during daytime, not worth alarming
+            print(f"[DREAMS] LLM unreachable ({strategy}): {e}")
             return None
+        except aiohttp.ServerTimeoutError:
+            print(f"[DREAMS] LLM timeout ({strategy}): model took > {TIMEOUT}s")
+            return None
+        except aiohttp.ClientError as e:
+            # All other aiohttp transient errors (disconnect, server error, etc.)
+            print(f"[DREAMS] LLM transient error ({strategy}): {type(e).__name__}: {e}")
+            return None
+        except Exception as e:
+            # Truly unexpected — log with full type so it's diagnosable
+            print(f"[DREAMS] LLM unexpected error ({strategy}): {type(e).__name__}: {e}")
+            return None
+
+        return self._parse_dream(raw, strategy, emotion)
 
     def _parse_dream(self, raw: str, strategy: str, emotion: str) -> dict | None:
         text = raw.strip().replace("```json", "").replace("```", "").strip()
         start = text.find("{")
         end   = text.rfind("}") + 1
         if start == -1 or end == 0:
+            print(f"[DREAMS] Parse fail ({strategy}): no JSON object found in response")
             return None
         try:
             d = json.loads(text[start:end])
+            hypothesis = d.get("hypothesis", "")[:300].strip()
+            if not hypothesis:
+                # LLM returned valid JSON but with a blank hypothesis field.
+                # Writing a blank memory would be worse than writing nothing.
+                print(f"[DREAMS] Parse fail ({strategy}): hypothesis field is empty")
+                return None
             return {
                 "strategy":   strategy,
-                "hypothesis": d.get("hypothesis", "")[:300],
+                "hypothesis": hypothesis,
                 "confidence": max(0.0, min(1.0, float(d.get("confidence", 0.5)))),
                 "emotion":    emotion,
             }
-        except (json.JSONDecodeError, ValueError):
+        except (json.JSONDecodeError, ValueError) as parse_err:
+            print(f"[DREAMS] Parse fail ({strategy}): {type(parse_err).__name__}: {parse_err} — raw={raw[:80]!r}")
             return None
 
     # ------------------------------------------------------------------

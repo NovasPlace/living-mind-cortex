@@ -6,19 +6,22 @@ def test_turboquant_shapes():
     batch_size = 2
     seq_len = 16
     dim = 256
-    
-    tq = TurboQuantKV(dim=dim, jl_dim=64, pq_bits=4)
+    jl_dim = 64  # will be rounded up to next mult of 8 inside TQ (already 64)
+
+    tq = TurboQuantKV(dim=dim, jl_dim=jl_dim, pq_bits=4)
     x = torch.randn(batch_size, seq_len, dim)
-    
+
     compressed = tq.compress(x)
-    
-    assert compressed['norm'].shape == (batch_size, seq_len, 1)
-    assert compressed['direction_q'].shape == (batch_size, seq_len, dim)
-    assert compressed['error_scale'].shape == (batch_size, seq_len, 1)
-    assert compressed['qjl_signs'].shape == (batch_size, seq_len, 64)
-    
+
+    assert compressed['norm'].shape        == (batch_size, seq_len, 1),          f"norm:        {compressed['norm'].shape}"
+    assert compressed['direction_q'].shape == (batch_size, seq_len, dim // 2),   f"direction_q:  {compressed['direction_q'].shape}  (packed INT4)"
+    assert compressed['error_scale'].shape == (batch_size, seq_len, 1),          f"error_scale: {compressed['error_scale'].shape}"
+    assert compressed['qjl_signs'].shape   == (batch_size, seq_len, tq.jl_dim // 8), f"qjl_signs:   {compressed['qjl_signs'].shape}  (packed INT8)"
+    assert compressed['direction_q'].dtype == torch.int8,  "direction_q must be int8"
+    assert compressed['qjl_signs'].dtype   == torch.int8,  "qjl_signs must be int8"
+
     decompressed = tq.decompress(compressed)
-    assert decompressed.shape == (batch_size, seq_len, dim)
+    assert decompressed.shape == (batch_size, seq_len, dim), f"decompress output: {decompressed.shape}"
 
 
 def test_turboquant_dot_product_approximation():
@@ -37,28 +40,34 @@ def test_turboquant_dot_product_approximation():
     q = torch.randn(1, 128, dim)
     k = torch.randn(1, 128, dim)
     
-    # True FP32
+    # True FP32 dot (for correlation baseline)
     true_dot = torch.sum(q * k, dim=-1)
-    
-    # Compressed TQ
+
+    # Compressed TQ path — use score_sequence() which is the correct API for q_len > 1
     compressed_k = tq.compress(k)
-    tq_dot = tq.attention_dot_product(q, compressed_k)
-    
+    tq_dot = tq.score_sequence(q, compressed_k).squeeze(1, 2)  # [1, 128, 128] → diagonal
+    # For correlation we want the q[i] · k[i] scores, i.e. the diagonal of [q_len, kv_len]
+    tq_dot = torch.diagonal(tq_dot.squeeze(0), dim1=-2, dim2=-1)  # [q_len]
+
+    # ── Reconstruct intermediate terms for individual correlation checks ──
+    from cortex.turboquant import _unpack_int4, _unpack_signs
     q_rot = torch.matmul(q, tq.R)
     k_rot = torch.matmul(k, tq.R)
-    k_hat = compressed_k['direction_q'] * compressed_k['norm']
-    error = k_rot - k_hat
-    
+
+    dq_int = _unpack_int4(compressed_k['direction_q'], dim)   # recover FP32 int4 grid
+    k_hat  = dq_int * compressed_k['dq_scale'].float() * compressed_k['norm'].float()
+    error  = k_rot - k_hat
+
     # 1. PQ correlation
     pq_dot = torch.sum(q_rot * k_hat, dim=-1)
-    
-    # 2. JL Exact correlation
+
+    # 2. JL Exact (unquantized) correlation baseline
     jl_exact_dot = torch.sum(torch.matmul(q_rot, tq.P) * torch.matmul(error, tq.P), dim=-1)
-    
-    # 3. JL Quantized correlation
-    error_scale = compressed_k['error_scale']
-    error_proj_approx = compressed_k['qjl_signs'] * error_scale
-    jl_quant_dot = torch.sum(torch.matmul(q_rot, tq.P) * error_proj_approx, dim=-1)
+
+    # 3. JL Quantized correlation — unpack the actual stored bits
+    signs_fp         = _unpack_signs(compressed_k['qjl_signs'], tq.jl_dim)
+    error_proj_approx = signs_fp * compressed_k['error_scale'].float()
+    jl_quant_dot     = torch.sum(torch.matmul(q_rot, tq.P) * error_proj_approx, dim=-1)
     
     true_error_dot = torch.sum(q_rot * error, dim=-1)
     

@@ -18,9 +18,15 @@ from api.agent_gateway import router as agent_router
 from sovereign.heartbeat import SovereignHeartbeat
 from cortex.router import BiomechanicRouter
 from core.inference import SovereignInferenceClient
+from cortex.adapter_lifecycle import AdapterLifecycleManager
 
 router = BiomechanicRouter(cortex)
 inference_engine = SovereignInferenceClient()
+lifecycle_manager = AdapterLifecycleManager(
+    heatsink=router.heatsink,
+    inference_client=inference_engine,
+    poll_interval_seconds=60.0,
+)
 
 # ── Autonomic Heartbeat (shared singletons — same memory universe as recall()) ─
 heartbeat = SovereignHeartbeat(
@@ -83,24 +89,29 @@ async def lifespan(app: FastAPI):
     await runtime.birth()
     
     # Ignite the autonomic nervous system — runs alongside the runtime pulse
-    pulse_task = asyncio.create_task(heartbeat.start())
-    
+    pulse_task     = asyncio.create_task(heartbeat.start())
+
     # Ignite the HTP Listener
     signaling_task = asyncio.create_task(signaling_listener())
-    print("[Sovereign] Autonomic Nervous System & HTP Listener ONLINE.")
-    
+
+    # Ignite the VRAM eviction daemon
+    lifecycle_task = asyncio.create_task(lifecycle_manager.start())
+
+    print("[Sovereign] Autonomic Nervous System, HTP Listener & VRAM LifecycleMgr ONLINE.")
+
     yield
-    
+
     # Clean shutdown
     print("[Sovereign] Initiating graceful shutdown...")
     pulse_task.cancel()
     signaling_task.cancel()
+    lifecycle_task.cancel()
     
     # Explicitly close the WebRTC peer connection to prevent port hanging
     if htp_listener.pc:
         await htp_listener.pc.close()
         
-    await asyncio.gather(pulse_task, signaling_task, return_exceptions=True)
+    await asyncio.gather(pulse_task, signaling_task, lifecycle_task, return_exceptions=True)
     await runtime.death()
     print("[Sovereign] Cortex safely hibernated.")
 
@@ -224,16 +235,24 @@ class InvocationRequest(BaseModel):
 @app.post("/api/invoke")
 async def invoke_sovereign(request: InvocationRequest):
     # 1. Embed the incoming prompt into phase-space
-    # Use 256 dimensions which matches our testing and memory graph
     import numpy as np
     prompt_hvec = encode_atom(request.prompt, dim=256).astype(np.float32)
-    
+
     # 2. Sweep the memory graph to determine the dominant hemisphere
     adapter_id = await router.route_prompt(prompt_hvec)
-    
-    # 3. Fire the inference pass with the correct LoRA mounted
+
+    # 3. Ensure the winning adapter is physically loaded in VRAM before generating.
+    #    On first resonance this triggers POST /v1/load_lora_adapter.
+    #    If load fails, fall back to base_model so the request never drops.
+    if adapter_id != "base_model":
+        loaded = await lifecycle_manager.ensure_loaded(adapter_id)
+        if not loaded:
+            print(f"[Invoke] Load failed for '{adapter_id}', falling back to base_model.")
+            adapter_id = "base_model"
+
+    # 4. Fire the inference pass with the confirmed-loaded LoRA mounted
     response_text = await inference_engine.generate(request.prompt, adapter_id)
-    
+
     return {
         "hemisphere_used": adapter_id,
         "response": response_text
