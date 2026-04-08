@@ -75,6 +75,7 @@ class ConceptNode:
     edges:        List[str]     = field(default_factory=list)  # neighbor node IDs
     cool_ticks:   int           = 0       # consecutive ticks below FREEZE_TEMP
     born_from:    List[str]     = field(default_factory=list)  # parent IDs if fused
+    born_at_pulse: int          = 0       # substrate pulse count at injection
     created_at:   float         = field(default_factory=time.time)
     last_heated:  float         = field(default_factory=time.time)
     access_count: int           = 0
@@ -163,10 +164,10 @@ def _hrr_bind(v1: List[float], v2: List[float]) -> List[float]:
     """
     n      = len(v1)
     result = []
-    for k in range(n):
-        val = sum(v1[j] * v2[(k - j) % n] for j in range(n))
-        result.append(val / n)
-    # Normalize
+    for i in range(n):
+        val = sum(v1[j] * v2[(i - j) % n] for j in range(n))
+        result.append(val)
+    # Re-normalize to prevent blowing up mathematically
     norm = math.sqrt(sum(x*x for x in result)) or 1.0
     return [x / norm for x in result]
 
@@ -174,15 +175,36 @@ def _hrr_dot(v1: List[float], v2: List[float]) -> float:
     """Cosine similarity between two hypervectors."""
     return sum(a*b for a, b in zip(v1, v2))
 
+# ============================================================
+#  CAUSAL BINDING CONSTANTS
+# ============================================================
+_causal_rng = random.Random(42)
+_causal_perms = {}
+
+def _hrr_permute(vec: List[float]) -> List[float]:
+    """
+    Apply a fixed causal permutation to a holographic vector.
+    Breaks HRR commutativity: bind(cause, permute(effect)).
+    This geometrically encodes directional / causal order.
+    """
+    dim = len(vec)
+    if dim not in _causal_perms:
+        perm = list(range(dim))
+        _causal_rng.shuffle(perm)
+        _causal_perms[dim] = perm
+    perm = _causal_perms[dim]
+    return [vec[i] for i in perm]
+
+
 def _synthesize_content(a: ConceptNode, b: ConceptNode) -> str:
     """
     Generate the emergent concept label when A and B fuse.
-    In production: run through an LLM for true semantic synthesis.
-    Here: deterministic composite label.
+    Determines causal order from born_at_pulse before labelling.
     """
-    a_words = a.content.split()[:3]
-    b_words = b.content.split()[-3:]
-    return f"[EMERGENT] {' '.join(a_words)} ⟷ {' '.join(b_words)}"
+    cause, effect = (a, b) if a.born_at_pulse <= b.born_at_pulse else (b, a)
+    c_words = cause.content.split()[:3]
+    e_words = effect.content.split()[-3:]
+    return f"[CAUSAL] {' '.join(c_words)} → {' '.join(e_words)}"
 
 
 # ── The Thermorphic Substrate ─────────────────────────────────────────────────
@@ -237,6 +259,7 @@ class ThermorphicSubstrate:
             anchor_temperature = anchor_temperature,
             tags        = tags or [],
             edges       = edges_to or [],
+            born_at_pulse = self.pulse_count,
             hvec        = _random_hvec(dims),
         )
         self.nodes[node.id] = node
@@ -434,9 +457,10 @@ class ThermorphicSubstrate:
     def _fuse(self, a: ConceptNode, b: ConceptNode) -> ConceptNode:
         """
         Semantic Fusion: two hot adjacent concepts merge into a new emergent node.
-        The child inherits a holographic binding of both parents (HRR circular convolution).
-        Both parents lose heat — energy is conserved (approximately).
+        Causal order is resolved from born_at_pulse before asymmetric HRR binding.
         """
+        cause, effect = (a, b) if a.born_at_pulse <= b.born_at_pulse else (b, a)
+        
         combined_temp = a.temperature + b.temperature
         child_temp    = combined_temp * FUSION_YIELD
 
@@ -449,16 +473,20 @@ class ThermorphicSubstrate:
         # Generate emergent content
         child_content = _synthesize_content(a, b)
 
-        # Holographic binding — child's vector encodes the A⊗B relationship
-        child_hvec = _hrr_bind(a.hvec, b.hvec) if a.hvec and b.hvec else _random_hvec(64)
+        # Holographic binding — asymmetric permutation encodes causality
+        if cause.hvec and effect.hvec:
+            child_hvec = _hrr_bind(cause.hvec, _hrr_permute(effect.hvec))
+        else:
+            child_hvec = _random_hvec(64)
 
         child = ConceptNode(
             id          = str(uuid.uuid4())[:8],
             content     = child_content,
             temperature = child_temp,
-            tags        = list(set(a.tags + b.tags + ["emergent", "fused"])),
+            tags        = list(set(a.tags + b.tags + ["emergent", "fused", "causal"])),
             edges       = [a.id, b.id],
             born_from   = [a.id, b.id],
+            born_at_pulse = self.pulse_count,
             hvec        = child_hvec,
         )
         self.nodes[child.id] = child
