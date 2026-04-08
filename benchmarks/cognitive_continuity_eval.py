@@ -205,8 +205,10 @@ def run_benchmark(dims=64, freeze_dwell=5, pulses=15):
         flat_signal = sum(1 for n in flat_recall if any(w in n.content for w in t['truth'].split()[-3:]))
         results_flat["snr"].append(flat_signal / 3.0)
         
+        import asyncio
+        
         # System B: Thermorphic DB
-        thermo_recall = thermo_db.recall(t['q'], top_k=3)
+        thermo_recall = asyncio.run(thermo_db.recall(t['q'], top_k=3))
         thermo_context = " ".join([n.content for n in thermo_recall])
         # Include emergent fusions as signal if they contain the truth
         thermo_signal = sum(1 for n in thermo_recall if any(w in n.content for w in t['truth'].split()[-3:]))

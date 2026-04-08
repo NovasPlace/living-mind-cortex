@@ -203,7 +203,17 @@ class ThermorphicSubstrate:
         self.total_fusions: int                    = 0
         self.total_crystals: int                   = 0
         self._heat_injections: List[Tuple[str, float, str]] = []  # queued heat events
+        self.SAFE_MUTATION_GAP = self._calculate_safe_mutation_gap()
 
+    def _calculate_safe_mutation_gap(self) -> int:
+        """Dynamically compute system collision constant based on decay physics."""
+        gap = 0
+        temp = 1.8  # Max injection peak
+        while temp > (1.8 - 0.5) and gap < 50:
+            temp *= EMISSION_RATE
+            gap += 1
+        return gap
+        
     # ── PUBLIC API ─────────────────────────────────────────────────────────
 
     def inject(
@@ -352,7 +362,7 @@ class ThermorphicSubstrate:
 
         return events
 
-    def recall(self, query_content: str, top_k: int = 5) -> List[ConceptNode]:
+    async def recall(self, query_content: str, top_k: int = 5) -> List[ConceptNode]:
         """
         Retrieve the most relevant concepts.
         Relevance = thermal weight × semantic similarity.
@@ -374,7 +384,18 @@ class ThermorphicSubstrate:
             results.append((score, node))
 
         results.sort(key=lambda x: x[0], reverse=True)
-        top    = [node for _, node in results[:top_k]]
+        top = [node for _, node in results[:top_k]]
+        
+        # ── Collision Resolution Guard ────────────────────────────────
+        if len(top) >= 2 and len(q_words & set(top[0].content.lower().split())) > 0:
+            delta_t = abs(top[0].temperature - top[1].temperature)
+            sim_diff = abs(results[0][0] - results[1][0])
+            
+            # If nodes are extremely similar semantically but their temp delta is dangerously small
+            if delta_t < 0.5 and sim_diff < 0.5 and (top[0].temperature > 1.0 or top[1].temperature > 1.0):
+                top[0] = await self._resolve_collision(query_content, top[0], top[1])
+                # Remove the losing node to prevent context pollution
+                top.pop(1)
 
         # Accessing heats the recalled nodes (spreading activation)
         for node in top:
@@ -444,6 +465,32 @@ class ThermorphicSubstrate:
         b.edges.append(child.id)
 
         return child
+        
+    async def _resolve_collision(self, query: str, node_a: ConceptNode, node_b: ConceptNode) -> ConceptNode:
+        """
+        LLM fallback for thermal collisions (delta_t < 0.5).
+        Asks the organism to actively resolve the contradiction via explicit context.
+        """
+        import aiohttp
+        prompt = f"""You are the memory cortex. A semantic collision occurred between two highly salient memories.
+Query context: {query}
+Fact 1: [Temperature {node_a.temperature:.1f}] {node_a.content}
+Fact 2: [Temperature {node_b.temperature:.1f}] {node_b.content}
+Resolve the contradiction based on temperature recency and logic. Output ONLY the correct string content."""
+        try:
+            async with aiohttp.ClientSession() as session:
+                payload = {"model": "gemma3", "prompt": prompt, "stream": False}
+                async with session.post("http://localhost:11434/api/generate", json=payload, timeout=5) as resp:
+                    ans = await resp.json()
+                    winning_text = ans.get("response", "").strip()
+                    if node_a.content.lower() in winning_text.lower():
+                        return node_a
+                    elif node_b.content.lower() in winning_text.lower():
+                        return node_b
+        except Exception:
+            pass
+        # Fallback to pure thermodynamic winner
+        return node_a if node_a.temperature >= node_b.temperature else node_b
 
 
 # ── Demo / Runnable Simulation ────────────────────────────────────────────────

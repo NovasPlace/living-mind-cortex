@@ -126,7 +126,8 @@ def run_variant(variant_name: str, delay_pulses: int, flat_db, thermo_db):
     flat_context = " ".join([n.content for n in flat_recall])
     
     # Thermorphic Retrieval
-    thermo_recall = thermo_db.recall(question, top_k=2)
+    import asyncio
+    thermo_recall = asyncio.run(thermo_db.recall(question, top_k=2))
     thermo_context = " ".join([f"[Salience {n.temperature:.1f}] {n.content}" for n in thermo_recall])
 
     prompt = "Use ONLY the provided context to answer. If multiple conflicting facts exist, you must identify the correct one. Context: {c}\nQ: {q}"
