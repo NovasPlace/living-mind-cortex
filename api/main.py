@@ -140,6 +140,120 @@ if os.path.exists(ui_path):
     app.mount("/ui", StaticFiles(directory=ui_path, html=True), name="ui")
 
 # ------------------------------------------------------------------------------
+# SOVEREIGN AGENTS — Agent Registry endpoints
+# Agents are registered configs dispatched through the existing inference
+# pipeline — NOT separate processes. `deploy` = mark as deployed + heat plasma.
+# No subprocess spawning; logs are the FastAPI server logs (uvicorn stdout).
+# ------------------------------------------------------------------------------
+
+import sys as _sys
+import os as _os
+# sovereign-agents lives as a sibling repo. Add it to the path if not installed.
+_sovereign_path = _os.environ.get(
+    "SOVEREIGN_AGENTS_PATH",
+    _os.path.join(_os.path.dirname(__file__), "..", "..", "sovereign-agents"),
+)
+if _sovereign_path not in _sys.path:
+    _sys.path.insert(0, _sovereign_path)
+
+from sovereign.registry import AgentRegistry
+
+_agent_registry = AgentRegistry(
+    agents_dir="./agents",
+    adapter_paths={
+        "base_model":   "",
+        "code_expert":  "./code_expert",
+        "logic_expert": "./logic_expert",
+    },
+)
+_agent_registry.load()
+
+
+@app.get("/agents")
+async def list_agents():
+    """List all registered agents with their live plasma temperatures."""
+    summary = _agent_registry.summary()
+    # Enrich with live plasma temp from the router's heatsink
+    for entry in summary:
+        name = entry["name"]
+        try:
+            defn          = _agent_registry.get(name)
+            plasma_temp   = router.heatsink.get_temp(f"agent:{name}")
+            entry["plasma_temp"] = plasma_temp
+            _agent_registry.update_plasma_temp(name, plasma_temp)
+        except (KeyError, Exception):
+            pass
+    return summary
+
+
+@app.post("/agents/{name}/deploy")
+async def deploy_agent(name: str):
+    """
+    Mark an agent as deployed and heat its plasma domain.
+    Agents share the runtime's inference pipeline — this is NOT a subprocess launch.
+    The plasma heat tells the router to prefer this agent's LoRA adapter.
+    """
+    try:
+        defn = _agent_registry.get(name)
+    except KeyError:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail=f"Agent '{name}' not found.")
+
+    _agent_registry.set_status(name, "deployed")
+
+    # Heat the agent's domain in the shared heatsink
+    new_temp = router.heatsink.resonate(
+        f"agent:{name}",
+        friction_heat=defn.friction_heat,
+        data={"agent": name, "adapter": defn.lora_adapter},
+    )
+    _agent_registry.update_plasma_temp(name, new_temp)
+
+    # Also ensure the LoRA adapter is loaded in VRAM if not base_model
+    if defn.lora_adapter != "base_model":
+        await lifecycle_manager.ensure_loaded(defn.lora_adapter)
+
+    return {
+        "status":      "deployed",
+        "agent":       name,
+        "adapter":     defn.lora_adapter,
+        "plasma_temp": new_temp,
+    }
+
+
+@app.get("/agents/{name}/status")
+async def agent_status(name: str):
+    """Per-agent status: plasma temp, VRAM state, last_active."""
+    try:
+        defn    = _agent_registry.get(name)
+        runtime = _agent_registry.get_runtime(name)
+    except KeyError:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail=f"Agent '{name}' not found.")
+
+    plasma_temp = router.heatsink.get_temp(f"agent:{name}")
+    _agent_registry.update_plasma_temp(name, plasma_temp)
+
+    return {
+        "name":         name,
+        "skill":        defn.skill,
+        "lora_adapter": defn.lora_adapter,
+        "status":       runtime.status,
+        "last_active":  runtime.last_active,
+        "plasma_temp":  plasma_temp,
+        "vram_loaded":  inference_engine.is_loaded(defn.lora_adapter)
+                        if defn.lora_adapter != "base_model" else True,
+    }
+
+
+@app.post("/agents/reload")
+async def reload_agents():
+    """Hot-reload agent registry — picks up new/modified .agent.yaml files."""
+    agents = _agent_registry.reload()
+    return {"reloaded": len(agents), "agents": [a.name for a in agents]}
+
+
+# ------------------------------------------------------------------------------
 # REST API (MALKHUT)
 # ------------------------------------------------------------------------------
 
