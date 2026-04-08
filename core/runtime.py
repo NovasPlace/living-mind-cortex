@@ -381,9 +381,18 @@ class AgentRuntime:
 
         try:
             pulse_data = await self.vitals()
-            await manager.broadcast_pulse(pulse_data)
-        except Exception:
-            pass
+        except Exception as vitals_err:
+            # vitals() calls cortex.stats() — a recurring failure here means
+            # Postgres is degraded but the pulse log shows no sign of it.
+            print(f"[{ts}] [PULSE] ⚠️  vitals() failed: {type(vitals_err).__name__}: {vitals_err}")
+            pulse_data = None
+
+        if pulse_data is not None:
+            try:
+                await manager.broadcast_pulse(pulse_data)
+            except Exception:
+                # Dead/disconnected WebSocket clients — expected, not an error.
+                pass
             
         print(f"[{ts}] [PULSE] #{n} - Pillar Sync Completed")
 
