@@ -22,8 +22,10 @@
 - [Quick Start](#-quick-start)
 - [API Reference](#-api-reference)
 - [Dashboard](#-dashboard)
+- [Benchmarks](#-benchmarks)
 - [Changelog](#-changelog)
 - [Roadmap](#-roadmap)
+- [Sponsor](#-sponsor)
 - [Contributing](#-contributing)
 - [License](#-license)
 
@@ -31,7 +33,9 @@
 
 ## 🤔 What Is This
 
-Living Mind Cortex is a **local-first autonomous backend** that gives AI coding agents (like Claude, Gemini, or any custom agent) a persistent cognitive substrate — complete with Ebbinghaus memory decay, a hormone bus, circadian rhythms, dream synthesis, and a self-evolving genome.
+Living Mind Cortex is a **local-first autonomous backend** that gives AI coding agents (like Claude, Gemini, or any custom agent) a persistent cognitive substrate — complete with a thermorphic memory physics layer, a hormone bus, circadian rhythms, dream synthesis, and a self-evolving genome.
+
+Memories have **temperature**. Hot memories diffuse to neighbors, fuse into emergent concepts when two collide, and crystallize into permanent identity when they cool. No programmed rules — the physics decides what to keep.
 
 You attach your agent once. From that point on:
 - It **remembers** everything it learned, with biologically-inspired decay
@@ -349,11 +353,34 @@ See [CHANGELOG.md](CHANGELOG.md) for full version history.
 - [x] ~~Hippocampal session replay~~  ✅ v2.0
 - [x] ~~Metacognition overseer~~  ✅ v2.0
 - [x] ~~Interoception engine~~  ✅ v2.0
+- [x] ~~Thermorphic memory substrate (heat equation replaces Ebbinghaus)~~  ✅ v2.1
+- [x] ~~Evolvable thermorphic genes (α, fusion threshold, freeze dwell)~~  ✅ v2.1
 - [ ] Multi-agent swarm coordination layer
 - [ ] Vector embedding hybrid memory (pgvector)
 - [ ] Web UI for memory editing / pruning
 - [ ] Plugin system for custom research tools
 - [ ] `living_mind_client` package on PyPI
+
+---
+
+## 💖 Sponsor
+
+This project is built and maintained by one person, nights and weekends, with the goal of making autonomous AI agents genuinely smarter over time — not just bigger context windows.
+
+If you're using it, building on top of it, or just think the thermorphic computing idea is cool — a sponsorship helps keep the lights on and the research moving.
+
+[![Sponsor](https://img.shields.io/badge/Sponsor-%E2%9D%A4-pink?logo=github-sponsors)](https://github.com/sponsors/NovasPlace)
+
+### What sponsorship funds
+
+| Tier | Amount | What it enables |
+|------|--------|-----------------|
+| ☕ Coffee | $5/mo | Keeps the server awake for nightly evolver runs |
+| 🧬 Researcher | $15/mo | Dedicated time for one architectural improvement/month |
+| 🔬 Lab Partner | $50/mo | Priority feature requests + direct Discord access + name in CREDITS |
+| 🏛️ Founder | $150/mo | Co-design sessions, early access to unreleased modules, listed as Founding Sponsor |
+
+One-time sponsorships also welcome — no pressure, no paywalls. Everything here stays MIT/Apache, forever.
 
 ---
 
