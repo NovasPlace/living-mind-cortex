@@ -325,7 +325,7 @@ JSON:
                 data = await resp.json()
                 return data.get("response", "").strip()
         except Exception as e:
-            print(f"[BRAIN] LLM call failed: {e}")
+            print(f"[BRAIN] LLM call failed: {type(e).__name__} - {e}")
             return None
 
     # ------------------------------------------------------------------

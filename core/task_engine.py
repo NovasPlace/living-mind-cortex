@@ -57,7 +57,7 @@ class TaskEngine:
         return {
             "active_mission": self.active_mission,
             "status": self.status,
-            "steps_count": len(self.steps_taken),
+            "steps_taken": self.steps_taken,
         }
 
 # Singleton

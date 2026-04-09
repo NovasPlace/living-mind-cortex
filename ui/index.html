@@ -683,6 +683,20 @@
             </div>
           </div>
 
+          <!-- Mission Control -->
+          <div>
+            <div class="vitals-section-label">Mission Control</div>
+            <div class="vitals-row">
+              <span id="m-active" style="color:var(--text-primary); font-family:var(--font-mono); font-size:10px; line-height:1.2; word-wrap:break-word;">no active mission</span>
+            </div>
+            <div class="vitals-row" style="margin-bottom: 8px;">
+              <span>status</span>
+              <span class="vitals-val" id="m-status">—</span>
+            </div>
+            <div class="mission-steps" id="m-steps" style="font-family:var(--font-mono); font-size:9px; color:var(--text-secondary); line-height:1.4; max-height:80px; overflow-y:auto; scrollbar-width:none;">
+            </div>
+          </div>
+
           <!-- Memory Metrics -->
           <div>
             <div class="vitals-section-label">Memory Substrate</div>
@@ -997,6 +1011,19 @@ function updateSystemVitals(d) {
   if (d.sublimated !== undefined) document.getElementById('v-sublim').textContent = d.sublimated;
   if (d.snr !== undefined) document.getElementById('v-snr').textContent = (d.snr * 100).toFixed(0) + '%';
   if (d.recall !== undefined) document.getElementById('v-recall').textContent = (d.recall * 100).toFixed(0) + '%';
+  
+  if (d.mission) {
+    document.getElementById('m-active').textContent = d.mission.active_mission || 'no active mission';
+    document.getElementById('m-status').textContent = d.mission.status || 'idle';
+    
+    const stepsEl = document.getElementById('m-steps');
+    if (d.mission.steps_taken && d.mission.steps_taken.length > 0) {
+      stepsEl.innerHTML = d.mission.steps_taken.map(s => `<div>- ${s}</div>`).join('');
+      stepsEl.scrollTop = stepsEl.scrollHeight;
+    } else {
+      stepsEl.innerHTML = '<div>(no steps yet)</div>';
+    }
+  }
 }
 
 async function fetchBusPeers() {

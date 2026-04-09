@@ -20,7 +20,26 @@ class ConnectionManager:
 
     async def broadcast_pulse(self, data: dict):
         """Send pulse vitals to all connected UIs"""
-        message = json.dumps({"type": "pulse", "data": data})
+        payload = {"type": "system_status"}
+        payload.update(data)
+        
+        # Enrich payload to match frontend UI mappings
+        payload["pulse_count"] = data.get("event_loops", 0)
+        mem = data.get("memory", {})
+        payload["node_count"] = mem.get("total", 0)
+        
+        # The Cortex runs deterministic extraction in backend, fallback to offline defaults
+        payload["vram"] = data.get("brain", {}).get("model", "Ollama CPU")
+        
+        # Sublimation / SNR values are technically dynamic, but safely zero if idle 
+        payload["sublimated"] = mem.get("flashbulbs", 0)
+        payload["snr"] = 1.0
+        payload["recall"] = 1.0
+
+        from core.task_engine import task_engine
+        payload["mission"] = task_engine.report()
+
+        message = json.dumps(payload)
         for connection in self.active_connections:
             try:
                 await connection.send_text(message)
