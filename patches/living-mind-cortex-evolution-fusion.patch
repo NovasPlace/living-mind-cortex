@@ -1,0 +1,15 @@
+diff -ruN '--exclude=__pycache__' '--exclude=.pytest_cache' '--exclude=*.pyc' '--exclude=evolution_vault.sqlite3*' '--exclude=witness_ledger.jsonl' lmc_base/living-mind-cortex-main/.env.example lmc_plus_evo/living-mind-cortex-main/.env.example
+--- lmc_base/living-mind-cortex-main/.env.example	2026-05-07 06:15:16.000000000 +0000
++++ lmc_plus_evo/living-mind-cortex-main/.env.example	2026-05-07 06:59:01.226631973 +0000
+@@ -21,3 +21,11 @@
+ LMC_DREAM_MODEL=gemma3
+ LMC_VLLM_URL=http://localhost:8001/v1
+ SOVEREIGN_LOCAL_URL=http://localhost:8008
++
++# Evolution Vault organ
++LMC_ENABLE_EVOLUTION_VAULT=1
++# LMC_EVOLUTION_PATH=/absolute/path/to/Evolution
++# EVOLUTION_SQLITE_PATH=/absolute/path/to/evolution_vault.sqlite3
++
++# Cortex Witness ledger
++# LMC_WITNESS_LEDGER=/absolute/path/to/witness_ledger.jsonl
